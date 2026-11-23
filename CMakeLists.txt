@@ -1,5 +1,9 @@
 # == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
-set(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/third_party/pico-sdk/")
+# Allow an external SDK (for example ./tools/pico-sdk) without breaking the
+# normal submodule-based build.
+if(NOT DEFINED PICO_SDK_PATH)
+    set(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/third_party/pico-sdk/")
+endif()
 
 if(WIN32)
     set(USERHOME $ENV{USERPROFILE})
@@ -20,7 +24,7 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 # set(PICOSTATION_VARIANT "picostation_plus_pico2")
 
 if(NOT DEFINED PICOSTATION_VARIANT)
-    if(PICO_BOARD EQUAL pico2)
+    if(PICO_BOARD STREQUAL "pico2")
         set(PICOSTATION_VARIANT "picostation_pico2")
     else()
         set(PICOSTATION_VARIANT "picostation_pico1")
@@ -93,6 +97,38 @@ target_compile_definitions(
     MAXINDEX=2
 )
 
+# The official RC5 release keeps the 0xbeef SubQ CRC placeholder. Enabling
+# this is experimental and should only be used for hardware validation.
+option(PICOSTATION_SUBQ_CRC "Enable experimental SubQ CRC-16 generation" OFF)
+if(PICOSTATION_SUBQ_CRC)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_SUBQ_CRC=1)
+endif()
+
+# SCEX region: 0 = SCEA (NTSC-U), 1 = SCEE (PAL), 2 = SCEI (NTSC-J),
+# 3 = universal (all three once, the current default).
+set(PICOSTATION_SCEX_REGION 3 CACHE STRING "SCEX region: 0=SCEA, 1=SCEE, 2=SCEI, 3=universal")
+target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_SCEX_REGION=${PICOSTATION_SCEX_REGION})
+
+# Target PS1 motherboard profile (primary deployment target: PU-18, later PU-8).
+set(PICOSTATION_MAINBOARD "PU18" CACHE STRING "Target PS1 motherboard: PU18 or PU8")
+if(PICOSTATION_MAINBOARD STREQUAL "PU18")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_MAINBOARD_PU18=1)
+elseif(PICOSTATION_MAINBOARD STREQUAL "PU8")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_MAINBOARD_PU8=1)
+else()
+    message(FATAL_ERROR "Unsupported PICOSTATION_MAINBOARD='${PICOSTATION_MAINBOARD}'. Expected PU18 or PU8.")
+endif()
+
+option(PICOSTATION_OVERCLOCK "Enable Mechacon overclock profile (_OC)" OFF)
+if(PICOSTATION_OVERCLOCK)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_OVERCLOCK=1)
+endif()
+
+option(PICOSTATION_SCEX_OPEN_DRAIN "Use open-drain/Hi-Z for SCEX high level (safer with IC706 on PU-18)" OFF)
+if(PICOSTATION_SCEX_OPEN_DRAIN)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_SCEX_OPEN_DRAIN=1)
+endif()
+
 addBinaryFileWithSize(${PROJECT_NAME} loaderImage loaderImageSize binary/picostation-menu.bin)
 
 target_sources(
@@ -123,7 +159,15 @@ target_include_directories(
 
 add_subdirectory(third_party/SD-fatfs build)
 
-add_subdirectory(third_party/RP2040_Pseudo_Atomic)
+# Prefer the git submodule, but allow a local ./tools checkout for development
+# environments where the submodule was not initialized.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/third_party/RP2040_Pseudo_Atomic/CMakeLists.txt")
+    add_subdirectory(third_party/RP2040_Pseudo_Atomic)
+elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/tools/RP2040_Pseudo_Atomic/CMakeLists.txt")
+    add_subdirectory(tools/RP2040_Pseudo_Atomic)
+else()
+    message(FATAL_ERROR "RP2040_Pseudo_Atomic not found (third_party or tools)")
+endif()
 
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 pico_enable_stdio_uart(${PROJECT_NAME} 0)

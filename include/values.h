@@ -14,7 +14,8 @@ enum : unsigned int {
     XLAT = GPIO_XLAT,
     SQCK = GPIO_SQCK,
     LMTSW = GPIO_LMTSW,
-    SCEX_DATA = GPIO_SCEX_DATA,  // UART1 TX
+    MECHACON_CLK = GPIO_MECHACON_CLK,
+    SCEX_DATA = GPIO_SCEX_DATA,  // Bit-banged SCEX output
     DOOR = GPIO_DOOR,
     RESET = GPIO_RESET,
     SD_MISO = GPIO_SD_MISO,   // SPI1 RX
@@ -77,7 +78,7 @@ constexpr int c_leadIn = 4500;
 constexpr int c_preGap = 150;
 
 constexpr int c_sectorMin = 0;
-extern int c_sectorMax;
+extern volatile int c_sectorMax;
 
 //uint32_t c_MaxTrackMoveTime = 15;//35714;//139;
 constexpr uint32_t c_MaxSubqDelayTime = 3333;  // uS

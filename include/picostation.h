@@ -32,10 +32,10 @@ struct PWMSettings {
     const unsigned int gpio;
     unsigned int sliceNum;
     pwm_config config;
-    const uint16_t wrap;
+    uint16_t wrap;
     const unsigned int clkdiv;
     const bool invert;
-    const uint16_t level;
+    uint16_t level;
 };
 
 extern mutex_t g_mechaconMutex;
@@ -44,8 +44,8 @@ extern pseudoatomic<bool> g_coreReady[2];
 extern unsigned int g_soctOffset;
 extern unsigned int g_subqOffset;
 
-extern bool g_subqDelay;
-extern int g_targetPlaybackSpeed;
+extern volatile bool g_subqDelay;
+extern volatile int g_targetPlaybackSpeed;
 extern unsigned int g_audioCtrlMode;
 
 [[noreturn]] void core0Entry();  // Reset, playback speed, Sled, soct, subq
@@ -53,6 +53,7 @@ extern unsigned int g_audioCtrlMode;
 
 void initHW();
 void updatePlaybackSpeed();
-void reset();
+void setOverclock(bool enable);
+void reset(uint8_t resetMode = 1);
 }  // namespace picostation
 
