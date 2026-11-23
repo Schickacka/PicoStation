@@ -3,7 +3,13 @@
 // Thin wrapper around RP2040Atomic.hpp
 
 #if !PICO_NO_HARDWARE
+#if __has_include("third_party/RP2040_Pseudo_Atomic/Inc/RP2040Atomic.hpp")
 #include "third_party/RP2040_Pseudo_Atomic/Inc/RP2040Atomic.hpp"
+#elif __has_include("tools/RP2040_Pseudo_Atomic/Inc/RP2040Atomic.hpp")
+#include "tools/RP2040_Pseudo_Atomic/Inc/RP2040Atomic.hpp"
+#else
+#error "RP2040_Pseudo_Atomic headers not found (third_party or tools)"
+#endif
 
 inline void initPseudoAtomics() { patom::PseudoAtomicInit(); }
 

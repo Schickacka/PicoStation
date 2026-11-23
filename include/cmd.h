@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "drive_mechanics.h"
+#include "hardware/sync.h"
+#include "pico/time.h"
 #include "pseudo_atomics.h"
 
 namespace picostation {
@@ -20,10 +22,31 @@ class MechCommand {
     void resetXBUSY();
 	void setBootSectorPattern(const uint8_t value);
 	uint8_t getBootSectorPattern() { return m_bootSectorPattern; }
-	void resetBootSectorPattern() { m_bootSectorPattern = 0; }
+	void resetBootSectorPattern() {
+		cancelXbusyAlarm();
+		const uint32_t irq = save_and_disable_interrupts();
+		m_bootSectorPattern = 0;
+		m_latched = 0;
+		m_jumpTrack = 0;
+		m_dir = false;
+		m_prevDir = false;
+		m_sledBreak = false;
+		m_lastSledStop = 0;
+		restore_interrupts(irq);
+	}
 	bool isBootSectorPattern() { return  (m_bootSectorPattern == 0b0111); }
 
   private:
+    void cancelXbusyAlarm() {
+        const uint32_t irq = save_and_disable_interrupts();
+        const alarm_id_t alarm = m_xbusyAlarm;
+        m_xbusyAlarm = -1;
+        restore_interrupts(irq);
+        if (alarm >= 0) {
+            cancel_alarm(alarm);
+        }
+    }
+    void drainMechFifoLocked();
 	enum MECH_COMMAND
 	{
 		MECH_CMD_FOCUS_CONTROL = 0x0,
@@ -93,7 +116,8 @@ class MechCommand {
 	{
 		EXTENDED_SKIP_BOOTSECTOR = 1,
 		EXTENDED_SKIP_EDC = 2,
-		EXTENDED_GET_CFG = 3
+		EXTENDED_GET_CFG = 3,
+		EXTENDED_OVERCLOCK = 5
 	};
 
 	typedef union mech_cmd_t
@@ -173,12 +197,17 @@ class MechCommand {
 		uint32_t raw;
 	} mech_cmd;
 
-    int m_jumpTrack = 0;
-    uint32_t m_latched = 0;  // Command latch
-	uint8_t m_bootSectorPattern = 0;
+    volatile int m_jumpTrack = 0;
+    volatile uint32_t m_latched = 0;  // Command latch
+    volatile uint8_t m_bootSectorPattern = 0;
+    volatile bool m_dir = false;
+    volatile bool m_prevDir = false;
+    volatile bool m_sledBreak = false;
+    volatile uint64_t m_lastSledStop = 0;
+    volatile alarm_id_t m_xbusyAlarm = -1;
 
-    size_t m_currentSens = 0;
-    bool m_sensData[16] =
+    volatile size_t m_currentSens = 0;
+    volatile bool m_sensData[16] =
     {
         1,  // $0X - FZC
         1,  // $1X - AS

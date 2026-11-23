@@ -46,6 +46,7 @@ static void posix_close(struct CueFile *file, struct CueScheduler *scheduler, vo
 	}
     f_close(fp);
     free(fp);
+    file->opaque = NULL;
     
     if (scheduler)
 	{
@@ -86,7 +87,18 @@ static void posix_write(struct CueFile *file, struct CueScheduler *scheduler, ui
 }
 
 struct CueFile *create_posix_file(struct CueFile *file, const char *filename, uint8_t mode) {
-    
+    /* The cue parser calls file->destroy() on failure, so make every vtable
+       entry valid before attempting to open the file. */
+    file->opaque = NULL;
+    file->destroy = posix_destroy;
+    file->close = posix_close;
+    file->size = posix_size;
+    file->read = posix_read;
+    file->write = posix_write;
+    file->cfilename = NULL;
+    file->filename = NULL;
+    file->references = 1;
+
     FIL *fp = malloc(sizeof(FIL));
     if (!fp)
 	{

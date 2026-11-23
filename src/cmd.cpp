@@ -25,53 +25,72 @@ extern pseudoatomic<uint32_t> g_fileArg;
 extern pseudoatomic<picostation::FileListingStates> needFileCheckAction;
 extern pseudoatomic<int> listReadyState;
 
-static bool dir = 0;
-static bool trk_dir = 0;
-static bool prev_dir = 0;
-static bool sled_break = 0;
-static uint16_t m_jumpTrack = 0;
+void __time_critical_func(picostation::MechCommand::drainMechFifoLocked)()
+{
+    while (pio_sm_get_rx_fifo_level(PIOInstance::MECHACON, SM::MECHACON))
+    {
+        const uint32_t c = pio_sm_get_blocking(PIOInstance::MECHACON, SM::MECHACON) >> 24;
+        m_latched = (m_latched >> 8) | (c << 16);
+        m_currentSens = c >> 4;
+    }
+}
 
 void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 {
-    static mech_cmd command;
-    command.raw = m_latched;
-    m_latched = 0;
+    mech_cmd command;
+    {
+        // Drain any remaining byte from the PIO RX FIFO together with reading
+        // and clearing m_latched so PIO0_IRQ_0 and XLAT never tear a command.
+        const uint32_t irq = save_and_disable_interrupts();
+        drainMechFifoLocked();
+        command.raw = m_latched;
+        m_latched = 0;
+        gpio_put(Pin::SENS, m_sensData[m_currentSens]);
+        restore_interrupts(irq);
+    }
     
 	switch (command.cmd.id)
     {
 		case MECH_CMD_TRACKING_MODE:
 		{
-			if(!g_driveMechanics.isSledStopped())
+			const uint64_t now = time_us_64();
+			if (!g_driveMechanics.isSledStopped())
 			{
-				DEBUG_PRINT("%c\n", (dir == 0) ? '+' : '-');
+				DEBUG_PRINT("%c\n", (!m_dir) ? '+' : '-');
 
-				if((sled_break == 0) || (prev_dir == dir))
-				{
-					g_driveMechanics.setSector(g_driveMechanics.get_track_count(), dir);
-				}
-				
+				const bool wasBrake = g_driveMechanics.isSledBrake();
 				g_driveMechanics.stopSled();
-				sled_break = 1;
-				prev_dir = dir;
+
+				if (!wasBrake)
+				{
+					// Arm a single-use brake window for an immediate reverse kick
+					// (mechanical sled braking from the HC05).
+					m_sledBreak = true;
+					m_prevDir = m_dir;
+					m_lastSledStop = now;
+				}
+				else
+				{
+					m_sledBreak = false;
+				}
 			}
 
-			switch(command.tracking_mode.sled)
+			switch (command.tracking_mode.sled)
 			{		
 				case SLED_FORWARD:
-				{
-					DEBUG_PRINT("SLED FORWARD\n");
-					dir = 0;
-					m_i2s.i2s_set_state(0);
-					g_driveMechanics.startSled();
-					break;
-				}
-
 				case SLED_REVERSE:
 				{
-					DEBUG_PRINT("SLED REVERSE\n");
-					dir = 1;
+					const bool newDir = (command.tracking_mode.sled == SLED_REVERSE);
+					const bool isBrake = m_sledBreak && (m_prevDir != newDir) && ((now - m_lastSledStop) < 40000U);
+					if (isBrake)
+					{
+						// Consume the single brake pulse so subsequent real seeks are never dropped.
+						m_sledBreak = false;
+					}
+					DEBUG_PRINT("%s%s\n", newDir ? "SLED REVERSE" : "SLED FORWARD", isBrake ? " (BRAKE)" : "");
+					m_dir = newDir;
 					m_i2s.i2s_set_state(0);
-					g_driveMechanics.startSled();
+					g_driveMechanics.startSled(newDir, isBrake);
 					break;
 				}
 			}
@@ -83,31 +102,52 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 	        switch(command.aseq_cmd.cmd)
 	        {
 	            case ASEQ_CMD_CANCEL:
+					cancelXbusyAlarm();
 					setSens(SENS::XBUSY, false);
 	            	m_i2s.i2s_set_state(1);
 					return;
 				
 	            case ASEQ_CMD_FOCUS_ON:
+				{
 					DEBUG_PRINT("ASEQ FOCUS ON\n");
+					cancelXbusyAlarm();
 					setSens(SENS::FOK, true);
 					m_i2s.i2s_set_state(0);
 					setSens(SENS::XBUSY, true);
-					add_alarm_in_ms(15, [](alarm_id_t id, void *user_data) -> int64_t 
+					const uint32_t irq = save_and_disable_interrupts();
+					const alarm_id_t alarm = add_alarm_in_ms(15, [](alarm_id_t id, void *user_data) -> int64_t 
 					{
 						picostation::MechCommand *mechCommand = static_cast<picostation::MechCommand *>(user_data);
-						mechCommand->resetXBUSY();
+						if (mechCommand->m_xbusyAlarm == id)
+						{
+							mechCommand->m_xbusyAlarm = -1;
+							mechCommand->resetXBUSY();
+						}
 						return 0;
 					}, this, true);
+					m_xbusyAlarm = (alarm >= 0) ? alarm : -1;
+					restore_interrupts(irq);
 					break;
+				}
 
 				case ASEQ_CMD_1TRK_JUMP:
 					DEBUG_PRINT("ASEQ 1TRK %c\n", command.aseq_cmd.dir ? '-' : '+');
 					g_driveMechanics.setSector(1, command.aseq_cmd.dir);
 					break;
 
+				case ASEQ_CMD_10TRK_JUMP:
+					DEBUG_PRINT("ASEQ 10TRK %c\n", command.aseq_cmd.dir ? '-' : '+');
+					g_driveMechanics.setSector(10, command.aseq_cmd.dir);
+					break;
+
 	            case ASEQ_CMD_2NTRK_JUMP:
 					DEBUG_PRINT("ASEQ 2NTRK (%d) %c\n", m_jumpTrack << 1, command.aseq_cmd.dir ? '-' : '+');
-	            	g_driveMechanics.setSector(m_jumpTrack << 1, command.aseq_cmd.dir);
+	            	g_driveMechanics.setSector(static_cast<uint32_t>(m_jumpTrack) << 1, command.aseq_cmd.dir);
+					break;
+
+				case ASEQ_CMD_MTRK_JUMP:
+					DEBUG_PRINT("ASEQ MTRK (%d) %c\n", m_jumpTrack, command.aseq_cmd.dir ? '-' : '+');
+					g_driveMechanics.setSector(m_jumpTrack, command.aseq_cmd.dir);
 					break;
 			}
 			break;
@@ -121,14 +161,25 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 		
 		case MECH_CMD_MODE_SPECIFICATION:
 		{
-			setSoct(command.mode_specification.SOCT);
-			
 			if (command.mode_specification.SOCT)
 			{
 				pio_sm_set_enabled(PIOInstance::SUBQ, SM::SUBQ, false);
+				pio_sm_set_enabled(PIOInstance::SOCT, SM::SOCT, false);
 				soct_program_init(PIOInstance::SOCT, SM::SOCT, g_soctOffset, Pin::SQSO, Pin::SQCK);
+				pio_sm_clear_fifos(PIOInstance::SOCT, SM::SOCT);
 				pio_sm_set_enabled(PIOInstance::SOCT, SM::SOCT, true);
-				pio_sm_put_blocking(PIOInstance::SOCT, SM::SOCT, 0xFFFFFFF);
+				pio_sm_put(PIOInstance::SOCT, SM::SOCT, 0xFFFFFFF);
+				setSoct(true);
+			}
+			else
+			{
+				// If the console cancels SOCT without draining the FIFO, the
+				// SOCT state machine would otherwise keep driving SQSO and
+				// collide with the SUBQ state machine; clear FIFOs too so the
+				// next SOCT activation cannot stall on a full TX FIFO.
+				setSoct(false);
+				pio_sm_set_enabled(PIOInstance::SOCT, SM::SOCT, false);
+				pio_sm_clear_fifos(PIOInstance::SOCT, SM::SOCT);
 			}
 			break;
 		}
@@ -141,16 +192,18 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 		
 		case MECH_CMD_CLV_MODE:
 		{
-			sled_break = 0;
+			m_sledBreak = false;
 			switch(command.clv_mode.mode)
 			{
 				case CLV_MODE_STOP:
+					cancelXbusyAlarm();
 					setSens(SENS::GFS, false);
 					m_i2s.i2s_set_state(0);
 					DEBUG_PRINT("Stop\n");
 					break;
 				
 				case CLV_MODE_BRAKE:
+					cancelXbusyAlarm();
 					DEBUG_PRINT("Brake\n");
 					break;
 					
@@ -185,32 +238,32 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 				case COMMAND_GOTO_ROOT:
 				{
 					DEBUG_PRINT("GOTO_ROOT\n");
-					needFileCheckAction = FileListingStates::GOTO_ROOT;
 					listReadyState = 0;
+					needFileCheckAction = FileListingStates::GOTO_ROOT;
 					break;
 				}
 					
 				case COMMAND_GOTO_PARENT:
 				{
 					DEBUG_PRINT("GOTO_PARENT\n");
-					needFileCheckAction = FileListingStates::GOTO_PARENT;
 					listReadyState = 0;
+					needFileCheckAction = FileListingStates::GOTO_PARENT;
 					break;
 				}
 					
 				case COMMAND_GOTO_DIRECTORY:
 				{
 					DEBUG_PRINT("GOTO_DIRECTORY\n");
-					needFileCheckAction = FileListingStates::GOTO_DIRECTORY;
 					listReadyState = 0;
+					needFileCheckAction = FileListingStates::GOTO_DIRECTORY;
 					break;
 				}
 					
 				case COMMAND_GET_NEXT_CONTENTS:
 				{
 					DEBUG_PRINT("GET_NEXT_CONTENTS\n");
-					needFileCheckAction = FileListingStates::GET_NEXT_CONTENTS;
 					listReadyState = 0;
+					needFileCheckAction = FileListingStates::GET_NEXT_CONTENTS;
 					break;
 				}
 					
@@ -246,8 +299,14 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 							break;
 						
 						case EXTENDED_GET_CFG:
-							needFileCheckAction = FileListingStates::GET_CFG;
 							listReadyState = 0;
+							needFileCheckAction = FileListingStates::GET_CFG;
+							break;
+
+						case EXTENDED_OVERCLOCK:
+#if defined(PICOSTATION_OVERCLOCK)
+							picostation::setOverclock((command.custom_cmd.arg & 1) != 0);
+#endif
 							break;
 						
 						default:
@@ -258,8 +317,8 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 				
 				case COMMAND_GET_COVER:
 				{
-					needFileCheckAction = FileListingStates::GET_COVER;
 					listReadyState = 0;
+					needFileCheckAction = FileListingStates::GET_COVER;
 					break;
 				}
 				
@@ -280,7 +339,7 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 		}
 		
 		default:
-			if (!((1 << command.cmd.id) & 0x6A))
+			if (!((1u << command.cmd.id) & 0x6Au))
 			{
 				setBootSectorPattern(command.cmd.id);
 			}
@@ -292,55 +351,66 @@ void __time_critical_func(picostation::MechCommand::setBootSectorPattern) (uint8
 {
 	if (!isBootSectorPattern())
 	{
-		static int current_value = -1;
-		if (current_value != value || value == 10)
+		switch (value)
 		{
-			current_value = value;
-			switch (value)
+		case 10:
+			if (m_bootSectorPattern == 0b0011)
 			{
-			case 10:
-				if (m_bootSectorPattern == 0b0011)
-				{
-					m_bootSectorPattern |= 1 << 2;
-				}
-				else
-				{
-					m_bootSectorPattern = 1 << 0;	
-				}
-
-				break;
-
-			case 255:
-				if (m_bootSectorPattern == 0b0001)
-				{
-					m_bootSectorPattern |= 1 << 1;
-				}
-				break;
-			
-			default:
-				m_bootSectorPattern = 0;
-				break;
+				m_bootSectorPattern |= 1 << 2;
+			}
+			else
+			{
+				m_bootSectorPattern = 1 << 0;	
 			}
 
-			if (m_bootSectorPattern == 0b0111)
+			break;
+
+		case 255:
+			if (m_bootSectorPattern == 0b0001)
 			{
-				g_discImage.set_skip_bootsector(true); 
-				DEBUG_PRINT("BOOTSECTOR PATTERN\n");
-				return;
+				m_bootSectorPattern |= 1 << 1;
 			}
+			break;
+		
+		default:
+			// Keep the upstream behavior: unrelated commands clear the
+			// pattern. Only the stale static state was a bug; the heuristic
+			// itself is left as the community tuned it.
+			m_bootSectorPattern = 0;
+			break;
+		}
+
+		if (m_bootSectorPattern == 0b0111)
+		{
+			g_discImage.set_skip_bootsector(true); 
+			DEBUG_PRINT("BOOTSECTOR PATTERN\n");
 		}
 	}
 }
 
-bool __time_critical_func(picostation::MechCommand::getSens)(const size_t what) const { return m_sensData[what]; }
+bool __time_critical_func(picostation::MechCommand::getSens)(const size_t what) const
+{
+    if (what >= 16)
+    {
+        return false;
+    }
+    return m_sensData[what];
+}
 
 void __time_critical_func(picostation::MechCommand::setSens)(const size_t what, const bool new_value)
 {
+    if (what >= 16)
+    {
+        return;
+    }
+
+    const uint32_t irq = save_and_disable_interrupts();
     m_sensData[what] = new_value;
     if (what == m_currentSens)
     {
         gpio_put(Pin::SENS, new_value);
     }
+    restore_interrupts(irq);
 }
 
 bool picostation::MechCommand::getSoct() { return m_soctEnabled.Load(); }
@@ -354,13 +424,9 @@ void __time_critical_func(picostation::MechCommand::resetXBUSY)()
 
 void __time_critical_func(picostation::MechCommand::updateMech)() 
 {
-    while (pio_sm_get_rx_fifo_level(PIOInstance::MECHACON, SM::MECHACON))
-    {
-        const uint32_t c = pio_sm_get_blocking(PIOInstance::MECHACON, SM::MECHACON) >> 24;
-        m_latched = m_latched >> 8;
-        m_latched = m_latched | (c << 16);
-        m_currentSens = c >> 4;
-    }
+    const uint32_t irq = save_and_disable_interrupts();
+    drainMechFifoLocked();
     gpio_put(Pin::SENS, m_sensData[m_currentSens]);
+    restore_interrupts(irq);
 }
 

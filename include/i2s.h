@@ -18,8 +18,8 @@ class I2S {
   public:
     I2S() {};
     int dmaChannel;
-    bool menu_active;
-    bool s_doorPending;
+    volatile bool menu_active;
+    volatile bool s_doorPending;
     
     void i2s_set_state(uint8_t state) { i2s_state = state; }
     int getSectorSending() { return m_sectorSending.Load(); }
@@ -40,7 +40,7 @@ class I2S {
 	
 	int loadedSector[CACHED_SECS];
 	int lastSector;
-	uint8_t i2s_state = 0;
+	volatile uint8_t i2s_state = 0;
 	
     pseudoatomic<int> m_sectorSending;
     pseudoatomic<uint64_t> m_lastSectorTime;

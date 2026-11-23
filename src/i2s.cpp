@@ -96,6 +96,7 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
     static int currentSector = -1;
     lastSector = -1;
     m_sectorSending = -1;
+    m_lastSectorTime = 0;
     static uint32_t loadedImageIndex = 0;
     static uint16_t img_count;
 
@@ -181,16 +182,38 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					s_dataLocation = picostation::DiscImage::DataLocation::SDCard;
 					char filePath[c_maxFilePathLength + 1];
 					loadedImageIndex = g_fileArg.Load();
-					picostation::DirectoryListing::getPath(loadedImageIndex, filePath);
-					//printf("image cue name:%s\n", filePath);
-					g_discImage.load(filePath);
-					needFileCheckAction = picostation::FileListingStates::IDLE;
 					img_count = DirectoryListing::getDirectoryEntriesCount();
+
+					const bool gotPath = picostation::DirectoryListing::getPath(loadedImageIndex, filePath);
+					const bool mounted = gotPath && (FR_OK == g_discImage.load(filePath));
+
+					needFileCheckAction = picostation::FileListingStates::IDLE;
+
+					if (!mounted)
+					{
+						DEBUG_PRINT("mount failed: %s\n", gotPath ? filePath : "(invalid path)");
+
+						// Stay in the menu instead of pretending a broken image
+						// was mounted and then hanging on the first sector read.
+						g_discImage.unload();
+						g_discImage.makeDummyCue();
+						s_dataLocation = picostation::DiscImage::DataLocation::RAM;
+						menu_active = true;
+						reinitI2S();
+						g_driveMechanics.resetDrive();
+						g_discImage.set_skip_bootsector(false);
+						mechCommand.resetBootSectorPattern();
+						modChip.reset();
+						continue;
+					}
+
+					//printf("image cue name:%s\n", filePath);
 					menu_active = false;
 					reinitI2S();
 					g_driveMechanics.resetDrive();
 					g_discImage.set_skip_bootsector(false);
 					mechCommand.resetBootSectorPattern();
+					modChip.reset();
 
 					continue;
 					break;
@@ -235,22 +258,45 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 		else if (s_doorPending && !menu_active)
 		{
 			s_doorPending = false;
-			if (++loadedImageIndex > img_count)
+
+			// Valid indices are 0..img_count-1.
+			if (img_count == 0 || ++loadedImageIndex >= img_count)
 			{
 				loadedImageIndex = 0;
 			}
 			
 			char filePath[c_maxFilePathLength + 1];
-			picostation::DirectoryListing::getPath(loadedImageIndex, filePath);
-			g_discImage.unload();
-			g_discImage.load(filePath);
+			s_dataLocation = picostation::DiscImage::DataLocation::SDCard;
+			const bool gotPath = picostation::DirectoryListing::getPath(loadedImageIndex, filePath);
+			const bool mounted = gotPath && (FR_OK == g_discImage.load(filePath));
+
+			if (!mounted)
+			{
+				DEBUG_PRINT("disc change mount failed\n");
+
+				g_discImage.unload();
+				g_discImage.makeDummyCue();
+				s_dataLocation = picostation::DiscImage::DataLocation::RAM;
+				menu_active = true;
+				needFileCheckAction = picostation::FileListingStates::IDLE;
+				reinitI2S();
+				g_driveMechanics.resetDrive();
+				g_discImage.set_skip_bootsector(false);
+				mechCommand.resetBootSectorPattern();
+				modChip.reset();
+				continue;
+			}
 			
 			reinitI2S();
 			g_driveMechanics.resetDrive();
+			g_discImage.set_skip_bootsector(false);
+			mechCommand.resetBootSectorPattern();
+			modChip.reset();
 		}
 		
-        // Data sent via DMA, load the next sector
-        if (currentSector != lastSector && currentSector >= 4503 && currentSector < c_sectorMax)
+        // Data sent via DMA, load the next sector (never hammer SD while slewing)
+        if (currentSector != lastSector && currentSector >= 4503 && currentSector < c_sectorMax &&
+            g_driveMechanics.isSledStopped())
         {
 			if (!menu_active)
 			{
@@ -324,8 +370,10 @@ continue_transfer:
         {
 			if (currentSector >= 4503 && currentSector < c_sectorMax)
 			{
-				m_sectorSending = loadedSector[bufferForDMA];
+				// Publish timestamp before sector ID so Core 0 never pairs the
+				// new sector with the previous sector's timestamp.
 				m_lastSectorTime = time_us_64();
+				m_sectorSending = loadedSector[bufferForDMA];
 
 				dma_hw->ch[dmaChannel].read_addr = (uint32_t)pioSamples[bufferForDMA];
 
@@ -344,8 +392,8 @@ continue_transfer:
 			}
 			else if(picostation::g_subqDelay == false)
 			{
-				m_sectorSending = currentSector;
 				m_lastSectorTime = time_us_64();
+				m_sectorSending = currentSector;
 			}
         }
     }

@@ -30,7 +30,7 @@ class listingBuilder {
     }
 
     bool addTerminator(uint8_t hasNext, uint16_t count) {
-        if ((mSize + 4) > LISTING_SIZE) {
+        if ((mSize + 6) > LISTING_SIZE) {
             return false;
         }
         mValuesContainer[mSize] = 0;

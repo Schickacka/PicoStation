@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "global.h"
 #include "ff.h"
@@ -268,16 +269,35 @@ uint16_t* __time_critical_func(DirectoryListing::getFileListingData)()
 
 void __time_critical_func(DirectoryListing::combinePaths)(const char* filePath1, const char* filePath2, char* newPath)
 { 
-    char result[c_maxFilePathLength + 1];
-    strncpy(result, filePath1, c_maxFilePathLength);
-    
-    if (strnlen(result, c_maxFilePathLength) > 0)
+    if (!filePath1 || !filePath2 || !newPath)
     {
-        strncat(result, "/", c_maxFilePathLength);
+        return;
     }
-    
-    strncat(result, filePath2, c_maxFilePathLength);
-    strncpy(newPath, result, c_maxFilePathLength);
+
+    // Build the result directly into newPath (which may alias filePath1) and
+    // always keep it NUL-terminated. The previous strncpy/strncat chain could
+    // run past the end of a 256-byte buffer for long paths.
+    constexpr size_t c_maxLen = c_maxFilePathLength;
+
+    size_t length = strnlen(filePath1, c_maxLen);
+    if (length >= c_maxLen)
+    {
+        length = c_maxLen - 1;
+    }
+
+    memmove(newPath, filePath1, length);
+    newPath[length] = '\0';
+
+    if (length > 0 && (length + 1) < c_maxLen)
+    {
+        newPath[length++] = '/';
+    }
+
+    const size_t remaining = c_maxLen - length;
+    const size_t secondLength = strnlen(filePath2, remaining);
+
+    memcpy(newPath + length, filePath2, secondLength);
+    newPath[length + secondLength] = '\0';
 }
 
 bool __time_critical_func(DirectoryListing::getDirectoryEntry)(const uint32_t index, char* filePath)
@@ -313,7 +333,9 @@ bool __time_critical_func(DirectoryListing::getDirectoryEntry)(const uint32_t in
             {
                 if (filesProcessed == index)
                 {
-                    strncpy(filePath, currentEntry.fname, c_maxFilePathLength);
+                    const size_t nameLength = strnlen(currentEntry.fname, c_maxFilePathLength);
+                    memcpy(filePath, currentEntry.fname, nameLength);
+                    filePath[nameLength] = '\0';
                     f_closedir(&dir);
                     return true;
                 }
@@ -350,18 +372,24 @@ void __time_critical_func(DirectoryListing::openCover)(const uint32_t index)
 		return;
 	}
 	
-    getPath(index, filePath);
-    
-    uint32_t len = strlen(filePath);
-    
-    if (filePath[len-4] == '.') // is cue file
+    if (!getPath(index, filePath))
+    {
+        return;
+    }
+
+    size_t len = strnlen(filePath, c_maxFilePathLength);
+
+    if (len >= 4 && strcasecmp(filePath + len - 4, ".cue") == 0) // is cue file
 	{
-		strcpy(&filePath[len-4], ".cov");
+        len -= 4;
 	}
-	else // is directory
-	{
-		strcat(filePath, ".cov");
-	}
+	
+    if (len + 4 > c_maxFilePathLength)
+    {
+        return;
+    }
+
+    memcpy(filePath + len, ".cov", 5);
     
 	DEBUG_PRINT("openCover: %s\n", filePath);
 
@@ -371,8 +399,10 @@ void __time_critical_func(DirectoryListing::openCover)(const uint32_t index)
 uint16_t* __time_critical_func(DirectoryListing::readCover)(const uint32_t part)
 {
 	static uint16_t cover_buf[1162];
-	UINT readed;
+	UINT readed = 0;
 	
+	memset(cover_buf, 0, sizeof(cover_buf));
+
 	if (!cover_fp.obj.fs)
 	{
 		DEBUG_PRINT("readCover: not found\n");
