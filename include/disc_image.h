@@ -24,6 +24,7 @@ class DiscImage {
     FRESULT load(const TCHAR *targetCue);
     void unload();
     SubQ::Data generateSubQ(const int sector);
+    bool isSbiSector(const int sector) const;
     bool hasData() { return m_hasData; };
     void makeDummyCue();
     void readSector(void *buffer, const int sector, DataLocation location, const uint16_t *scramling);
@@ -33,11 +34,16 @@ class DiscImage {
 	void set_skip_edc(bool skip) { skip_edc =  skip; }
 
   private:
+    static constexpr size_t c_maxSbiEntries = 64;
+
+    void loadSbi(const TCHAR *targetCue);
+
     CueDisc m_cueDisc;
-    bool m_hasData = false;
-    int m_currentLogicalTrack = 0;
-    bool skip_bootsector = false;
-    bool skip_edc = false;
+    uint32_t m_sbiSectors[c_maxSbiEntries] = {0};
+    volatile size_t m_sbiCount = 0;
+    volatile bool m_hasData = false;
+    volatile bool skip_bootsector = false;
+    volatile bool skip_edc = false;
 };
 
 extern DiscImage g_discImage;
