@@ -66,6 +66,8 @@ void __time_critical_func(picostation::DriveMechanics::setSector)(uint32_t step,
 {
     m_i2s.i2s_set_state(0);
 
+    // Protect the entire read-compute-publish cycle against XLAT / Core 0 races.
+    const uint32_t irq = save_and_disable_interrupts();
     const uint32_t sectorMax = static_cast<uint32_t>(c_sectorMax);
     uint32_t s = m_sector;
     if (s > sectorMax)
@@ -141,7 +143,6 @@ void __time_critical_func(picostation::DriveMechanics::setSector)(uint32_t step,
     }
 
     // Publish target sector, zone, LMTSW, and SubQ skip flag atomically wrt IRQs.
-    const uint32_t irq = save_and_disable_interrupts();
     m_sector = s;
     cur_zone = z;
     skip_subq = s;

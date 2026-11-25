@@ -12,28 +12,19 @@ namespace picostation {
 
 class MechCommand {
   public:
+    void initLock();
     bool getSens(const size_t what) const;
     void setSens(const size_t what, const bool new_value);
     void setcoutsens() { m_currentSens = 12;}
     bool getSoct();
     void setSoct(const bool new_value);
+    void cancelSoct();
     void processLatchedCommand();
     void updateMech();
     void resetXBUSY();
 	void setBootSectorPattern(const uint8_t value);
 	uint8_t getBootSectorPattern() { return m_bootSectorPattern; }
-	void resetBootSectorPattern() {
-		cancelXbusyAlarm();
-		const uint32_t irq = save_and_disable_interrupts();
-		m_bootSectorPattern = 0;
-		m_latched = 0;
-		m_jumpTrack = 0;
-		m_dir = false;
-		m_prevDir = false;
-		m_sledBreak = false;
-		m_lastSledStop = 0;
-		restore_interrupts(irq);
-	}
+	void resetBootSectorPattern();
 	bool isBootSectorPattern() { return  (m_bootSectorPattern == 0b0111); }
 
   private:
@@ -109,7 +100,8 @@ class MechCommand {
 		COMMAND_IO_DATA = 0x7,
 		COMMAND_EXTENDED = 0x8,
 		COMMAND_GET_COVER = 0x9,
-		COMMAND_BOOTLOADER = 0xA
+		COMMAND_BOOTLOADER = 0xA,
+		COMMAND_GET_CHEAT = 0xB
 	};
 
 	enum EXTENDED_CMD
@@ -117,6 +109,7 @@ class MechCommand {
 		EXTENDED_SKIP_BOOTSECTOR = 1,
 		EXTENDED_SKIP_EDC = 2,
 		EXTENDED_GET_CFG = 3,
+		EXTENDED_GET_BG = 4,
 		EXTENDED_OVERCLOCK = 5
 	};
 
@@ -179,6 +172,17 @@ class MechCommand {
 			uint32_t DCLV:1;
 			uint32_t :12;
 		} function_specification;
+
+		struct
+		{
+			uint32_t :14;
+			uint32_t PCT:2;
+			uint32_t ATT:1;
+			uint32_t Mute:1;
+			uint32_t VariDown:1;
+			uint32_t VariUp:1;
+			uint32_t :12;
+		} audio_control;
 
 		struct
 		{

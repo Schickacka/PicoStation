@@ -25,3 +25,8 @@ docs/source-changes.patch
 __pycache__/
 .DS_Store
 Thumbs.db
+
+# PicoMenu local build/venv
+picomenu/build/
+picomenu/build-*/
+picomenu/env/

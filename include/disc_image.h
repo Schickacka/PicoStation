@@ -32,15 +32,20 @@ class DiscImage {
     void readSectorSD(void *buffer, const int sector, const uint16_t *scramling);
     void set_skip_bootsector(bool skip) { skip_bootsector =  skip; }
 	void set_skip_edc(bool skip) { skip_edc =  skip; }
+    void resetAudioPeak();
 
   private:
     static constexpr size_t c_maxSbiEntries = 64;
 
     void loadSbi(const TCHAR *targetCue);
+    void updateAudioPeak(const uint32_t *i2sWords);
 
     CueDisc m_cueDisc;
     uint32_t m_sbiSectors[c_maxSbiEntries] = {0};
     volatile size_t m_sbiCount = 0;
+    volatile uint32_t m_audioPeakLR = 0;   // low16 = Left, high16 = Right (single atomic 32-bit word)
+    volatile uint16_t m_audioPeakMax = 0;
+    uint8_t m_audioLevelSide = 0;
     volatile bool m_hasData = false;
     volatile bool skip_bootsector = false;
     volatile bool skip_edc = false;

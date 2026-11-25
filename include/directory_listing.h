@@ -17,6 +17,10 @@ class DirectoryListing {
 	static uint16_t* getFileListingData();
     static void openCover(const uint32_t index);
     static uint16_t *readCover(const uint32_t part);
+    static void openCheat(const uint32_t index);
+    static uint16_t *readCheat(const uint32_t part);
+    static void openBg(void);
+    static uint16_t *readBg(const uint32_t part);
     static void openCfg(void);
     static uint16_t *readCfg(void);
   private:

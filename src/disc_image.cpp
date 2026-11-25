@@ -359,24 +359,96 @@ picostation::SubQ::Data __time_critical_func(picostation::DiscImage::generateSub
         }
     }
 
-#if PICOSTATION_SUBQ_CRC
-    // CRC-16/CCITT over the first 10 subcode bytes, with the PSX's final
-    // inversion, transmitted MSB first.
-    uint16_t crc = 0;
-    for (size_t i = 0; i < 10; i++)
+    const unsigned int audioMode = g_audioCtrlMode;
+    if (audioMode == audioControlModes::LEVELMETER)
     {
-        crc = (crc << 8) ^ crc16_lut[((crc >> 8) ^ subqdata.raw[i]) & 0xFF];
+        // Sony CXD2510Q/CXD2545Q Level Meter (PCT=1):
+        // bits 0..14 = 15-bit unsigned absolute PCM peak (LSB-first),
+        // bit 15 = L/R channel flag (1 = Left, 0 = Right), toggled per read.
+        const uint8_t side = m_audioLevelSide;
+        m_audioLevelSide ^= 1u;
+        __dmb();
+        const uint32_t packed = m_audioPeakLR;
+        uint16_t peak15 = g_audioMuted
+                              ? 0u
+                              : static_cast<uint16_t>(side ? (packed & 0xFFFFu) : (packed >> 16));
+        if (g_audioAttenuated)
+        {
+            peak15 >>= 2;  // -12 dB attenuation
+        }
+        subqdata.crc = static_cast<uint16_t>((peak15 & 0x7FFFu) | (static_cast<uint16_t>(side) << 15));
     }
-    crc ^= 0xFFFF;
+    else if (audioMode == audioControlModes::PEAKMETER)
+    {
+        // Sony CXD2510Q/CXD2545Q Peak Meter (PCT=2):
+        // bits 0..14 = highest absolute PCM peak held across both channels, bit 15 = 0.
+        __dmb();
+        uint16_t peak15 = g_audioMuted ? 0u : (m_audioPeakMax & 0x7FFFu);
+        if (g_audioAttenuated)
+        {
+            peak15 >>= 2;  // -12 dB attenuation
+        }
+        subqdata.crc = peak15;
+    }
+    else
+    {
+#if PICOSTATION_SUBQ_CRC
+        // CRC-16/CCITT over the first 10 subcode bytes, with the PSX's final
+        // inversion, transmitted MSB first.
+        uint16_t crc = 0;
+        for (size_t i = 0; i < 10; i++)
+        {
+            crc = (crc << 8) ^ crc16_lut[((crc >> 8) ^ subqdata.raw[i]) & 0xFF];
+        }
+        crc ^= 0xFFFF;
 
-    subqdata.raw[10] = static_cast<uint8_t>(crc >> 8);
-    subqdata.raw[11] = static_cast<uint8_t>(crc & 0xFF);
+        subqdata.raw[10] = static_cast<uint8_t>(crc >> 8);
+        subqdata.raw[11] = static_cast<uint8_t>(crc & 0xFF);
 #else
-    // Official RC5 behavior. Enable PICOSTATION_SUBQ_CRC=1 only for testing.
-    subqdata.crc = 0xbeef;
+        // Official RC5 behavior. Enable PICOSTATION_SUBQ_CRC=1 only for testing.
+        subqdata.crc = 0xbeef;
 #endif
+    }
 
     return subqdata;
+}
+
+void __time_critical_func(picostation::DiscImage::resetAudioPeak)()
+{
+    m_audioPeakLR = 0;
+    m_audioPeakMax = 0;
+    m_audioLevelSide = 0;
+    __dmb();
+}
+
+void __time_critical_func(picostation::DiscImage::updateAudioPeak)(const uint32_t *i2sWords)
+{
+    // CDDA sector = 588 stereo frames = 1176 16-bit signed PCM samples (L, R),
+    // stored in I2S 32-bit words with the 16-bit sample in bits [23:8].
+    uint16_t peakL = 0;
+    uint16_t peakR = 0;
+
+    for (size_t i = 0; i < c_cdSamplesSize * 2; i += 2)
+    {
+        const int32_t sL = static_cast<int16_t>(static_cast<uint16_t>(i2sWords[i] >> 8));
+        const int32_t sR = static_cast<int16_t>(static_cast<uint16_t>(i2sWords[i + 1] >> 8));
+        const uint32_t absL = (sL < 0) ? static_cast<uint32_t>(-sL) : static_cast<uint32_t>(sL);
+        const uint32_t absR = (sR < 0) ? static_cast<uint32_t>(-sR) : static_cast<uint32_t>(sR);
+        const uint16_t cL = (absL > 0x7FFFu) ? 0x7FFFu : static_cast<uint16_t>(absL);
+        const uint16_t cR = (absR > 0x7FFFu) ? 0x7FFFu : static_cast<uint16_t>(absR);
+
+        if (cL > peakL) peakL = cL;
+        if (cR > peakR) peakR = cR;
+    }
+
+    m_audioPeakLR = static_cast<uint32_t>(peakL) | (static_cast<uint32_t>(peakR) << 16);
+
+    const uint16_t sectorMax = (peakL > peakR) ? peakL : peakR;
+    if (sectorMax > m_audioPeakMax)
+    {
+        m_audioPeakMax = sectorMax;
+    }
+    __dmb();
 }
 
 struct Context
@@ -605,61 +677,90 @@ void __time_critical_func(picostation::DiscImage::loadSbi)(const TCHAR *targetCu
     memcpy(sbiPath + stemLen, ".sbi", 5);
 
     FIL sbiFile;
-    if (FR_OK != f_open(&sbiFile, sbiPath, FA_READ))
-    {
-        return;
-    }
-
-    uint8_t magic[4];
-    UINT br = 0;
-    if (FR_OK != f_read(&sbiFile, magic, sizeof(magic), &br) ||
-        br != sizeof(magic) ||
-        magic[0] != 'S' || magic[1] != 'B' || magic[2] != 'I' || magic[3] != 0)
-    {
-        f_close(&sbiFile);
-        return;
-    }
-
     size_t count = 0;
-    uint8_t recHdr[4];
-    uint8_t payload[10];
+    UINT br = 0;
 
-    while (FR_OK == f_read(&sbiFile, recHdr, sizeof(recHdr), &br) && br == sizeof(recHdr))
+    if (FR_OK == f_open(&sbiFile, sbiPath, FA_READ))
     {
-        UINT payloadLen = 0;
-        if (recHdr[3] == 1)
+        uint8_t magic[4];
+        if (FR_OK == f_read(&sbiFile, magic, sizeof(magic), &br) &&
+            br == sizeof(magic) &&
+            magic[0] == 'S' && magic[1] == 'B' && magic[2] == 'I' && magic[3] == 0)
         {
-            payloadLen = 10;
-        }
-        else if (recHdr[3] == 2 || recHdr[3] == 3)
-        {
-            payloadLen = 3;
-        }
-        else
-        {
-            break;
+            uint8_t recHdr[4];
+            uint8_t payload[10];
+
+            while (FR_OK == f_read(&sbiFile, recHdr, sizeof(recHdr), &br) && br == sizeof(recHdr))
+            {
+                UINT payloadLen = 0;
+                if (recHdr[3] == 1)
+                {
+                    payloadLen = 10;
+                }
+                else if (recHdr[3] == 2 || recHdr[3] == 3)
+                {
+                    payloadLen = 3;
+                }
+                else
+                {
+                    break;
+                }
+
+                if (FR_OK != f_read(&sbiFile, payload, payloadLen, &br) || br != payloadLen)
+                {
+                    break;
+                }
+
+                uint32_t mm = 0, ss = 0, ff = 0;
+                if (!fromBCD(recHdr[0], mm) || !fromBCD(recHdr[1], ss) || !fromBCD(recHdr[2], ff) ||
+                    ss >= 60u || ff >= 75u)
+                {
+                    continue;
+                }
+
+                // Redump LibCrypt .sbi entries are type 1 (invalid SubQ CRC -> CRCF = 0).
+                if (recHdr[3] == 1 && count < c_maxSbiEntries)
+                {
+                    m_sbiSectors[count++] = (mm * 60u + ss) * 75u + ff;
+                }
+            }
         }
 
-        if (FR_OK != f_read(&sbiFile, payload, payloadLen, &br) || br != payloadLen)
+        f_close(&sbiFile);
+    }
+    else
+    {
+        // Fallback to PicoStation SD Manager / LibCrypt .lsd (15-byte entries:
+        // 3-byte BCD MSF + 12-byte raw SubQ).
+        memcpy(sbiPath + stemLen, ".lsd", 5);
+        if (FR_OK != f_open(&sbiFile, sbiPath, FA_READ))
         {
-            break;
+            return;
         }
 
-        uint32_t mm = 0, ss = 0, ff = 0;
-        if (!fromBCD(recHdr[0], mm) || !fromBCD(recHdr[1], ss) || !fromBCD(recHdr[2], ff) ||
-            ss >= 60u || ff >= 75u)
+        uint8_t lsdRec[15];
+        while (FR_OK == f_read(&sbiFile, lsdRec, sizeof(lsdRec), &br) && br == sizeof(lsdRec))
         {
-            continue;
+            uint32_t mm = 0, ss = 0, ff = 0;
+            if (!fromBCD(lsdRec[0], mm) || !fromBCD(lsdRec[1], ss) || !fromBCD(lsdRec[2], ff) ||
+                ss >= 60u || ff >= 75u)
+            {
+                continue;
+            }
+
+            if (count < c_maxSbiEntries)
+            {
+                m_sbiSectors[count++] = (mm * 60u + ss) * 75u + ff;
+            }
         }
 
-        // Redump LibCrypt .sbi entries are type 1 (invalid SubQ CRC -> CRCF = 0).
-        if (recHdr[3] == 1 && count < c_maxSbiEntries)
-        {
-            m_sbiSectors[count++] = (mm * 60u + ss) * 75u + ff;
-        }
+        f_close(&sbiFile);
     }
 
-    f_close(&sbiFile);
+    if (count == 0)
+    {
+        return;
+    }
 
     // Insertion sort + deduplicate so isSbiSector() can binary-search in O(log N).
     for (size_t i = 1; i < count; i++)
@@ -766,6 +867,7 @@ void __time_critical_func(picostation::DiscImage::unload)()
 
     m_cueDisc.trackCount = 0;
     m_sbiCount = 0;
+    resetAudioPeak();
     __dmb();
     m_hasData = false;
 }
@@ -859,7 +961,12 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
     const bool haveDataTrack = (m_cueDisc.trackCount >= 1) &&
                                (m_cueDisc.tracks[1].trackType == CueTrackType::TRACK_TYPE_DATA);
 
-    if (!skip_bootsector && haveDataTrack && adjustedSector >= 0 && adjustedSector < 5)
+    // When bootsector patching is enabled, substitute the full PS1 license +
+    // PlayStation logo area (LBA 0..11, 12 sectors) from loaderImage.
+    // Japanese (SCEI) BIOSes verify BOTH the license text (LBA 4) AND the 3D
+    // PlayStation logo data (LBA 5..11) byte-for-byte; patching only 0..4 hangs
+    // fan-translated/patched discs that replace the PS1 logo (e.g. PaRappa BRA).
+    if (!skip_bootsector && haveDataTrack && adjustedSector >= 0 && adjustedSector < 12)
 	{
         const size_t loaderOffset = static_cast<size_t>(adjustedSector) * c_cdSamplesBytes;
 
@@ -918,7 +1025,15 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
             break;
         }
 
-        fr = f_lseek((FIL *)file->opaque, static_cast<FSIZE_t>(seekBytes));
+        FIL *trackFp = (FIL *)file->opaque;
+        if (!trackFp->cltbl &&
+            (static_cast<FSIZE_t>(seekBytes) < trackFp->fptr ||
+             static_cast<FSIZE_t>(seekBytes) > trackFp->fptr + 262144u))
+        {
+            posix_file_ensure_fastseek(file);
+        }
+
+        fr = f_lseek(trackFp, static_cast<FSIZE_t>(seekBytes));
         if (FR_OK != fr)
         {
             DEBUG_PRINT("f_lseek error: (%d)\n", fr);
@@ -944,6 +1059,20 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
         if (FR_OK == fr && br == c_cdSamplesBytes)
         {
             sectorRead = true;
+            if (locatedType != CueTrackType::TRACK_TYPE_DATA)
+            {
+                const unsigned int audioMode = g_audioCtrlMode;
+                if (audioMode == audioControlModes::LEVELMETER || audioMode == audioControlModes::PEAKMETER)
+                {
+                    updateAudioPeak(static_cast<const uint32_t *>(buffer));
+                }
+            }
+            else
+            {
+                m_audioPeakLR = 0;
+                m_audioPeakMax = 0;
+                __dmb();
+            }
         }
         else
         {
@@ -955,6 +1084,9 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
 
     if (!sectorRead)
     {
+        m_audioPeakLR = 0;
+        m_audioPeakMax = 0;
+        __dmb();
         // Never leave partially-read/stale data in the output buffer.
         if (locatedType == CueTrackType::TRACK_TYPE_DATA ||
             (locatedType == CueTrackType::TRACK_TYPE_UNKNOWN && haveDataTrack))

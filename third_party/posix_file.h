@@ -33,6 +33,7 @@ extern "C" {
 #endif
 
 struct CueFile* create_posix_file(struct CueFile*, const char* filename, uint8_t mode);
+void posix_file_ensure_fastseek(struct CueFile* file);
 
 #ifdef __cplusplus
 }

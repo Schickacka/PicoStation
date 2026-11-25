@@ -26,26 +26,33 @@ SOFTWARE.
 
 #include "posix_file.h"
 #include "ff.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+    FIL fp;
+    uint8_t clmtTried;
+} PosixFil;
+
 static void posix_destroy(struct CueFile *file) {}
 
 static void posix_close(struct CueFile *file, struct CueScheduler *scheduler, void (*cb)(struct CueFile *, struct CueScheduler *)) {
-    FIL *fp = (FIL *)file->opaque;
+    PosixFil *pf = (PosixFil *)file->opaque;
     
-    if (!fp)
+    if (!pf)
 	{
 		return;
 	}
-	
+
+    FIL *fp = &pf->fp;
     if (fp->cltbl)
     {
 		free(fp->cltbl);
 	}
     f_close(fp);
-    free(fp);
+    free(pf);
     file->opaque = NULL;
     
     if (scheduler)
@@ -86,6 +93,83 @@ static void posix_write(struct CueFile *file, struct CueScheduler *scheduler, ui
 #endif
 }
 
+void posix_file_ensure_fastseek(struct CueFile *file) {
+    if (!file || !file->opaque)
+    {
+        return;
+    }
+
+    PosixFil *pf = (PosixFil *)file->opaque;
+    FIL *fp = &pf->fp;
+    if (fp->cltbl || pf->clmtTried || fp->obj.objsize <= 65536u || fp->obj.sclust == 0)
+    {
+        return;
+    }
+
+    pf->clmtTried = 1;
+
+    static const size_t c_probeEntries = 64;
+    static const size_t c_maxCltblEntries = 512;
+    DWORD probe[64];
+    probe[0] = (DWORD)c_probeEntries;
+    fp->cltbl = probe;
+
+    FRESULT r = f_lseek(fp, CREATE_LINKMAP);
+    if (r == FR_OK)
+    {
+        const size_t count = probe[0];
+        if (count >= 2 && count <= c_probeEntries)
+        {
+            DWORD *cltbl = (DWORD *)malloc(count * sizeof(DWORD));
+            if (cltbl)
+            {
+                memcpy(cltbl, probe, count * sizeof(DWORD));
+                fp->cltbl = cltbl;
+            }
+            else
+            {
+                fp->cltbl = NULL;
+            }
+        }
+        else
+        {
+            fp->cltbl = NULL;
+        }
+    }
+    else if (r == FR_NOT_ENOUGH_CORE)
+    {
+        const size_t count = probe[0];
+        if (count >= 2 && count <= c_maxCltblEntries)
+        {
+            DWORD *cltbl = (DWORD *)malloc(count * sizeof(DWORD));
+            if (cltbl)
+            {
+                memset(cltbl, 0, count * sizeof(DWORD));
+                cltbl[0] = (DWORD)count;
+                fp->cltbl = cltbl;
+                r = f_lseek(fp, CREATE_LINKMAP);
+                if (r != FR_OK)
+                {
+                    free(cltbl);
+                    fp->cltbl = NULL;
+                }
+            }
+            else
+            {
+                fp->cltbl = NULL;
+            }
+        }
+        else
+        {
+            fp->cltbl = NULL;
+        }
+    }
+    else
+    {
+        fp->cltbl = NULL;
+    }
+}
+
 struct CueFile *create_posix_file(struct CueFile *file, const char *filename, uint8_t mode) {
     /* The cue parser calls file->destroy() on failure, so make every vtable
        entry valid before attempting to open the file. */
@@ -99,48 +183,55 @@ struct CueFile *create_posix_file(struct CueFile *file, const char *filename, ui
     file->filename = NULL;
     file->references = 1;
 
-    FIL *fp = malloc(sizeof(FIL));
-    if (!fp)
+    PosixFil *pf = (PosixFil *)malloc(sizeof(PosixFil));
+    if (!pf)
 	{
 		return NULL;
 	}
+    pf->clmtTried = 0;
+    FIL *fp = &pf->fp;
 	
     if(f_open(fp, filename, mode))
     {
-		free(fp);
+		free(pf);
 		return NULL;
 	}
     
-    DWORD cltbltmp = 1;
-    fp->cltbl = &cltbltmp;
+    /* Never block MOUNT_FILE walking FAT tables for 1..57 .bin files while the
+       PS1 BIOS is timing out waiting for SCEX/Lead-In!
+       - On contiguous exFAT files (stat == 2, NoFatChain), synthesize the
+         4-DWORD CLMT in O(1) right now with zero SD reads.
+       - On FAT32 / fragmented exFAT, defer CREATE_LINKMAP lazily to
+         posix_file_ensure_fastseek() on the first non-trivial seek. */
+    fp->cltbl = NULL;
+#if FF_FS_EXFAT
+    if (fp->obj.objsize > 65536u && fp->obj.sclust != 0 &&
+        fp->obj.fs && fp->obj.fs->fs_type == FS_EXFAT && fp->obj.stat == 2)
+    {
+#if FF_MAX_SS != FF_MIN_SS
+        const FSIZE_t sectorSize = (FSIZE_t)fp->obj.fs->ssize;
+#else
+        const FSIZE_t sectorSize = (FSIZE_t)FF_MAX_SS;
+#endif
+        const FSIZE_t clusterBytes = (FSIZE_t)fp->obj.fs->csize * sectorSize;
+        if (clusterBytes > 0)
+        {
+            const DWORD clusterCount = (DWORD)((fp->obj.objsize + clusterBytes - 1u) / clusterBytes);
+            DWORD *cltbl = (DWORD *)malloc(4 * sizeof(DWORD));
+            if (cltbl)
+            {
+                cltbl[0] = 4;
+                cltbl[1] = clusterCount;
+                cltbl[2] = fp->obj.sclust;
+                cltbl[3] = 0;
+                fp->cltbl = cltbl;
+            }
+            pf->clmtTried = 1;
+        }
+    }
+#endif
     
-    FRESULT r = f_lseek(fp, CREATE_LINKMAP);
-    
-    if (r == FR_NOT_ENOUGH_CORE)
-	{
-		size_t count = fp->cltbl[0];
-		DWORD *cltbl = (DWORD *)malloc(count * sizeof(DWORD));
-		
-		if (cltbl)
-		{
-			memset(cltbl, 0, count * sizeof(DWORD));
-			cltbl[0] = count;
-			fp->cltbl = cltbl;
-			r = f_lseek(fp, CREATE_LINKMAP);
-			
-			if(r != FR_OK)
-			{
-				free(cltbl);
-			}
-		}
-	}
-    
-    if(r != FR_OK)
-	{
-		fp->cltbl = NULL;
-	}
-    
-    file->opaque = fp;
+    file->opaque = pf;
     file->destroy = posix_destroy;
     file->close = posix_close;
     file->size = posix_size;

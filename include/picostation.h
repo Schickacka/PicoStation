@@ -22,11 +22,24 @@ enum class FileListingStates {
     MOUNT_FILE,
     PROCESS_FILES,
     GET_COVER,
-    GET_CFG
+    GET_CFG,
+    GET_BG,
+    GET_CHEAT
+};
+
+enum class MenuDataKind {
+    NONE,
+    LISTING,
+    CFG,
+    COVER,
+    CHEAT,
+    BG
 };
 
 extern pseudoatomic<FileListingStates> g_fileListingState;
 extern pseudoatomic<uint32_t> g_fileArg;
+extern pseudoatomic<uint32_t> g_fileCmdSeq;
+extern pseudoatomic<MenuDataKind> g_readyDataKind;
 
 struct PWMSettings {
     const unsigned int gpio;
@@ -46,7 +59,9 @@ extern unsigned int g_subqOffset;
 
 extern volatile bool g_subqDelay;
 extern volatile int g_targetPlaybackSpeed;
-extern unsigned int g_audioCtrlMode;
+extern volatile unsigned int g_audioCtrlMode;
+extern volatile bool g_audioMuted;
+extern volatile bool g_audioAttenuated;
 
 [[noreturn]] void core0Entry();  // Reset, playback speed, Sled, soct, subq
 [[noreturn]] void core1Entry();  // I2S, sdcard, modchip
@@ -54,6 +69,7 @@ extern unsigned int g_audioCtrlMode;
 void initHW();
 void updatePlaybackSpeed();
 void setOverclock(bool enable);
+void cancelSubqAlarm();
 void reset(uint8_t resetMode = 1);
 }  // namespace picostation
 

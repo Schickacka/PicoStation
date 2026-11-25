@@ -285,7 +285,12 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                         parser->state = CUE_PARSER_CATALOG;
                         break;
                     case KW_CDTEXTFILE:
-                        parser->state = CUE_PARSER_CDTEXTFILE;
+                    case KW_PERFORMER:
+                    case KW_SONGWRITER:
+                    case KW_TITLE:
+                        /* Ignore optional CD-TEXT metadata lines (quoted or unquoted)
+                           instead of aborting the cuesheet mount. */
+                        parser->inRem = !isEOL;
                         break;
                     case KW_FILE:
                         parser->state = CUE_PARSER_FILE_FILENAME;
@@ -297,26 +302,13 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                         parser->state = CUE_PARSER_INDEX_NUMBER;
                         break;
                     case KW_ISRC:
-                        if (parser->disc->isrc[0]) {
-                            end_parse(parser, scheduler, "cuesheet has too many ISRC arguments");
-                            return;
-                        }
                         parser->state = CUE_PARSER_ISRC;
-                        break;
-                    case KW_PERFORMER:
-                        parser->state = CUE_PARSER_PERFORMER;
                         break;
                     case KW_POSTGAP:
                         parser->state = CUE_PARSER_POSTGAP;
                         break;
                     case KW_PREGAP:
                         parser->state = CUE_PARSER_PREGAP;
-                        break;
-                    case KW_SONGWRITER:
-                        parser->state = CUE_PARSER_SONGWRITER;
-                        break;
-                    case KW_TITLE:
-                        parser->state = CUE_PARSER_SONGWRITER;
                         break;
                     case KW_TRACK:
                         parser->state = CUE_PARSER_TRACK_NUMBER;
@@ -458,7 +450,7 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                 }
                 char* endptr;
                 int indexNum = strtol(parser->word, &endptr, 10);
-                if (*endptr || (indexNum < 0) || (indexNum >= MAXINDEX)) {
+                if (*endptr || (indexNum < 0) || (indexNum > 99)) {
                     end_parse(parser, scheduler, "cuesheet INDEX number invalid");
                     return;
                 }
@@ -484,17 +476,24 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                     return;
                 }
                 struct CueTrack* track = &parser->disc->tracks[parser->currentTrack];
-                track->indices[track->indexCount] = parser->currentSectorNumber + sectorNumber;
-                if (parser->implicitIndex) {
-                    if (parser->currentTrack == 1) {
-                        track->indices[0] = 0;
-                    } else {
-                        track->indices[0] = track->indices[1]/*-150*/;
+                if (track->indexCount < MAXINDEX) {
+                    track->indices[track->indexCount] = parser->currentSectorNumber + sectorNumber;
+                    if (parser->implicitIndex) {
+                        if (parser->currentTrack == 1) {
+                            track->indices[0] = 0;
+                        } else {
+                            track->indices[0] = track->indices[1]/*-150*/;
+                            track->indices[1] += parser->currentPregap;
+                            track->fileOffset += parser->currentPregap;
+                            parser->currentSectorNumber += parser->currentPregap;
+                        }
+                        parser->implicitIndex = 0;
+                    } else if (track->indexCount == 1 && parser->currentPregap > 0 && parser->currentTrack > 1) {
+                        /* Hybrid cuesheet with both virtual PREGAP and explicit INDEX 00 + INDEX 01 */
                         track->indices[1] += parser->currentPregap;
                         track->fileOffset += parser->currentPregap;
                         parser->currentSectorNumber += parser->currentPregap;
                     }
-                    parser->implicitIndex = 0;
                 }
                 parser->state = CUE_PARSER_START;
             } break;
@@ -515,15 +514,25 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                 end_parse(parser, scheduler, "cuesheet PERFORMER argument not supported at the moment");
                 return;
                 break;
-            case CUE_PARSER_POSTGAP:
+            case CUE_PARSER_POSTGAP: {
                 if (keyword == KW_EMPTY) {
                     end_parse(parser, scheduler, "cuesheet POSTGAP missing its argument");
                     return;
                 }
+                if (parser->currentTrack == 0) {
+                    end_parse(parser, scheduler, "cuesheet POSTGAP before any TRACK");
+                    return;
+                }
+                int32_t postgapLength = timecodeToSectorNumber(parser->word);
+                if (postgapLength < 0) {
+                    end_parse(parser, scheduler, "cuesheet POSTGAP length invalid");
+                    return;
+                }
+                struct CueTrack* track = &parser->disc->tracks[parser->currentTrack];
+                track->postgap = postgapLength;
+                parser->currentSectorNumber += postgapLength;
                 parser->state = CUE_PARSER_START;
-                end_parse(parser, scheduler, "cuesheet POSTGAP argument not supported at the moment");
-                return;
-                break;
+            } break;
             case CUE_PARSER_PREGAP: {
                 if (keyword == KW_EMPTY) {
                     end_parse(parser, scheduler, "cuesheet PREGAP missing its argument");
@@ -608,7 +617,8 @@ static void parse(struct CueParser* parser, struct CueFile* file, struct CueSche
                         parser->isTrackANewFile = 0;
                         track->fileOffset = parser->currentSectorNumber;
                     } else {
-                        track->fileOffset = parser->disc->tracks[parser->currentTrack - 1].fileOffset;
+                        struct CueTrack* prevTrack = &parser->disc->tracks[parser->currentTrack - 1];
+                        track->fileOffset = prevTrack->fileOffset + prevTrack->postgap;
                     }
                     parser->disc->trackCount = trackNum;
                 }

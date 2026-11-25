@@ -129,7 +129,8 @@ if(PICOSTATION_SCEX_OPEN_DRAIN)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSTATION_SCEX_OPEN_DRAIN=1)
 endif()
 
-addBinaryFileWithSize(${PROJECT_NAME} loaderImage loaderImageSize binary/picostation-menu.bin)
+set(PICOSTATION_MENU_BIN "picomenu/picostation-menu.bin" CACHE STRING "Path to embedded PS1 menu image")
+addBinaryFileWithSize(${PROJECT_NAME} loaderImage loaderImageSize ${PICOSTATION_MENU_BIN})
 
 target_sources(
     ${PROJECT_NAME} PRIVATE

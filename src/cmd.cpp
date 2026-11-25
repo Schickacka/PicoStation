@@ -13,7 +13,6 @@
 #include "picostation.h"
 #include "pseudo_atomics.h"
 #include "values.h"
-#include "directory_listing.h"
 
 #if DEBUG_CMD
 #define DEBUG_PRINT printf
@@ -24,6 +23,37 @@ extern picostation::I2S m_i2s;
 extern pseudoatomic<uint32_t> g_fileArg;
 extern pseudoatomic<picostation::FileListingStates> needFileCheckAction;
 extern pseudoatomic<int> listReadyState;
+
+static spin_lock_t *s_bootPatternLock = nullptr;
+
+void picostation::MechCommand::initLock()
+{
+    if (!s_bootPatternLock)
+    {
+        s_bootPatternLock = spin_lock_init(spin_lock_claim_unused(true));
+    }
+}
+
+void __time_critical_func(picostation::MechCommand::cancelSoct)()
+{
+    setSoct(false);
+    pio_sm_set_enabled(PIOInstance::SOCT, SM::SOCT, false);
+    pio_sm_clear_fifos(PIOInstance::SOCT, SM::SOCT);
+}
+
+void __time_critical_func(picostation::MechCommand::resetBootSectorPattern)()
+{
+    cancelXbusyAlarm();
+    const uint32_t irq = spin_lock_blocking(s_bootPatternLock);
+    m_bootSectorPattern = 0;
+    m_latched = 0;
+    m_jumpTrack = 0;
+    m_dir = false;
+    m_prevDir = false;
+    m_sledBreak = false;
+    m_lastSledStop = 0;
+    spin_unlock(s_bootPatternLock, irq);
+}
 
 void __time_critical_func(picostation::MechCommand::drainMechFifoLocked)()
 {
@@ -189,6 +219,25 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 			g_targetPlaybackSpeed = command.function_specification.DSPB + 1;
 			break;
 		}
+
+		case MECH_CMD_AUDIO_CONTROL:
+		{
+			const unsigned int pct = command.audio_control.PCT;
+			const bool mute = (command.audio_control.Mute != 0);
+			const bool att = (command.audio_control.ATT != 0);
+			g_audioCtrlMode = pct;
+			g_audioMuted = mute;
+			g_audioAttenuated = att;
+			if (mute || pct == audioControlModes::NORMAL || pct == audioControlModes::ALTNORMAL)
+			{
+				g_discImage.resetAudioPeak();
+			}
+			// Do NOT call setBootSectorPattern here: official RC5 removed the
+			// 10 -> 255 -> 10 heuristic because it prematurely flips
+			// skip_bootsector = true mid-boot on Japanese (SCEI) BIOSes, breaking
+			// Full Boot of out-of-region games (e.g. Resident Evil 2/3 USA).
+			break;
+		}
 		
 		case MECH_CMD_CLV_MODE:
 		{
@@ -225,63 +274,72 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 		
 		case MECH_CMD_CUSTOM:
 		{
-			g_fileArg = command.custom_cmd.arg;
+			auto dispatchFileAction = [&](FileListingStates nextAction, bool clearReady) {
+				if (clearReady)
+				{
+					listReadyState = 0;
+					picostation::g_readyDataKind = picostation::MenuDataKind::NONE;
+				}
+				g_fileArg = command.custom_cmd.arg;
+				__dmb();
+				needFileCheckAction = nextAction;
+				__dmb();
+				picostation::g_fileCmdSeq = picostation::g_fileCmdSeq.Load() + 1u;
+			};
 
 			switch (command.custom_cmd.cmd)
 			{
 				case COMMAND_NONE:
 				{
-					needFileCheckAction = FileListingStates::IDLE;
+					dispatchFileAction(FileListingStates::IDLE, true);
 					break;
 				}
 					
 				case COMMAND_GOTO_ROOT:
 				{
 					DEBUG_PRINT("GOTO_ROOT\n");
-					listReadyState = 0;
-					needFileCheckAction = FileListingStates::GOTO_ROOT;
+					dispatchFileAction(FileListingStates::GOTO_ROOT, true);
 					break;
 				}
 					
 				case COMMAND_GOTO_PARENT:
 				{
 					DEBUG_PRINT("GOTO_PARENT\n");
-					listReadyState = 0;
-					needFileCheckAction = FileListingStates::GOTO_PARENT;
+					dispatchFileAction(FileListingStates::GOTO_PARENT, true);
 					break;
 				}
 					
 				case COMMAND_GOTO_DIRECTORY:
 				{
 					DEBUG_PRINT("GOTO_DIRECTORY\n");
-					listReadyState = 0;
-					needFileCheckAction = FileListingStates::GOTO_DIRECTORY;
+					dispatchFileAction(FileListingStates::GOTO_DIRECTORY, true);
 					break;
 				}
 					
 				case COMMAND_GET_NEXT_CONTENTS:
 				{
 					DEBUG_PRINT("GET_NEXT_CONTENTS\n");
-					listReadyState = 0;
-					needFileCheckAction = FileListingStates::GET_NEXT_CONTENTS;
+					dispatchFileAction(FileListingStates::GET_NEXT_CONTENTS, true);
 					break;
 				}
 					
 				case COMMAND_MOUNT_FILE:
 				{
 					DEBUG_PRINT("MOUNT_FILE\n");
-					needFileCheckAction = FileListingStates::MOUNT_FILE;
+					dispatchFileAction(FileListingStates::MOUNT_FILE, true);
 					break;
 				}
 					
 				case COMMAND_IO_COMMAND:
 				{
+					g_fileArg = command.custom_cmd.arg;
 					DEBUG_PRINT("COMMAND_IO_COMMAND %x\n", command.custom_cmd.arg);
 					break;
 				}
 					
 				case COMMAND_IO_DATA:
 				{
+					g_fileArg = command.custom_cmd.arg;
 					DEBUG_PRINT("COMMAND_IO_DATA %x\n", command.custom_cmd.arg);
 					break;
 				}
@@ -299,8 +357,11 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 							break;
 						
 						case EXTENDED_GET_CFG:
-							listReadyState = 0;
-							needFileCheckAction = FileListingStates::GET_CFG;
+							dispatchFileAction(FileListingStates::GET_CFG, true);
+							break;
+
+						case EXTENDED_GET_BG:
+							dispatchFileAction(FileListingStates::GET_BG, true);
 							break;
 
 						case EXTENDED_OVERCLOCK:
@@ -317,8 +378,13 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 				
 				case COMMAND_GET_COVER:
 				{
-					listReadyState = 0;
-					needFileCheckAction = FileListingStates::GET_COVER;
+					dispatchFileAction(FileListingStates::GET_COVER, true);
+					break;
+				}
+
+				case COMMAND_GET_CHEAT:
+				{
+					dispatchFileAction(FileListingStates::GET_CHEAT, true);
 					break;
 				}
 				
@@ -339,53 +405,18 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 		}
 		
 		default:
-			if (!((1u << command.cmd.id) & 0x6Au))
-			{
-				setBootSectorPattern(command.cmd.id);
-			}
 			break;
 	}
 }
 
 void __time_critical_func(picostation::MechCommand::setBootSectorPattern) (uint8_t value)
 {
-	if (!isBootSectorPattern())
-	{
-		switch (value)
-		{
-		case 10:
-			if (m_bootSectorPattern == 0b0011)
-			{
-				m_bootSectorPattern |= 1 << 2;
-			}
-			else
-			{
-				m_bootSectorPattern = 1 << 0;	
-			}
-
-			break;
-
-		case 255:
-			if (m_bootSectorPattern == 0b0001)
-			{
-				m_bootSectorPattern |= 1 << 1;
-			}
-			break;
-		
-		default:
-			// Keep the upstream behavior: unrelated commands clear the
-			// pattern. Only the stale static state was a bug; the heuristic
-			// itself is left as the community tuned it.
-			m_bootSectorPattern = 0;
-			break;
-		}
-
-		if (m_bootSectorPattern == 0b0111)
-		{
-			g_discImage.set_skip_bootsector(true); 
-			DEBUG_PRINT("BOOTSECTOR PATTERN\n");
-		}
-	}
+	// Official RC5 firmware controls skip_bootsector exclusively via
+	// COMMAND_EXTENDED / EXTENDED_SKIP_BOOTSECTOR (reset to false on MOUNT_FILE
+	// and hardware RESET). The legacy 10 -> 255 -> 10 heuristic broke Full Boot
+	// of out-of-region games on Japanese (SCEI) BIOSes by disabling bootsector
+	// patching right before the BIOS read sectors 0..4.
+	(void)value;
 }
 
 bool __time_critical_func(picostation::MechCommand::getSens)(const size_t what) const

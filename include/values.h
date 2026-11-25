@@ -64,6 +64,7 @@ PIO const I2S_DATA = pio0;
 PIO const MECHACON = pio0;
 PIO const SOCT = pio0;
 PIO const SUBQ = pio0;
+PIO const SCEX = pio1;
 }  // namespace PIOInstance
 
 namespace SM {
@@ -72,6 +73,8 @@ constexpr uint32_t I2S_DATA = 0;
 constexpr uint32_t MECHACON = 1;
 constexpr uint32_t SOCT = 2;
 constexpr uint32_t SUBQ = 3;
+// PIO1
+constexpr uint32_t SCEX = 0;
 }  // namespace SM
 
 constexpr int c_leadIn = 4500;

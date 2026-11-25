@@ -35,6 +35,8 @@
 // To-do: Make an ODE class and move these to members
 picostation::I2S m_i2s;
 picostation::MechCommand m_mechCommand;
+extern pseudoatomic<picostation::FileListingStates> needFileCheckAction;
+extern pseudoatomic<int> listReadyState;
 
 volatile bool picostation::g_subqDelay = false;  // core0: r/w
 
@@ -44,7 +46,9 @@ volatile int picostation::g_targetPlaybackSpeed = 1;  // core0: r/w
 mutex_t picostation::g_mechaconMutex;
 pseudoatomic<bool> picostation::g_coreReady[2];
 
-unsigned int picostation::g_audioCtrlMode = audioControlModes::NORMAL;
+volatile unsigned int picostation::g_audioCtrlMode = audioControlModes::NORMAL;
+volatile bool picostation::g_audioMuted = false;
+volatile bool picostation::g_audioAttenuated = false;
 
 pseudoatomic<picostation::FileListingStates> picostation::g_fileListingState;
 pseudoatomic<uint32_t> picostation::g_fileArg;
@@ -325,6 +329,7 @@ void __time_critical_func(picostation::initHW)()
     DEBUG_PRINT("Initializing...\n");
 
     mutex_init(&g_mechaconMutex);
+    m_mechCommand.initLock();
 
     for (const unsigned int pin : Pin::allPins)
     {
@@ -510,20 +515,23 @@ void __time_critical_func(picostation::setOverclock)(const bool enable)
     }
 }
 
+void __time_critical_func(picostation::cancelSubqAlarm)()
+{
+    const uint32_t irq = save_and_disable_interrupts();
+    const alarm_id_t pendingAlarm = s_subqAlarm;
+    s_subqAlarm = -1;
+    g_subqDelay = false;
+    restore_interrupts(irq);
+    if (pendingAlarm >= 0)
+    {
+        cancel_alarm(pendingAlarm);
+    }
+}
+
 void __time_critical_func(picostation::reset)(const uint8_t resetMode)
 {
     DEBUG_PRINT("RESET!\n");
-    {
-        const uint32_t irq = save_and_disable_interrupts();
-        const alarm_id_t pendingAlarm = s_subqAlarm;
-        s_subqAlarm = -1;
-        g_subqDelay = false;
-        if (pendingAlarm >= 0)
-        {
-            cancel_alarm(pendingAlarm);
-        }
-        restore_interrupts(irq);
-    }
+    cancelSubqAlarm();
     m_i2s.i2s_set_state(0);
     pio_sm_set_enabled(PIOInstance::SUBQ, SM::SUBQ, false);
     pio_sm_set_enabled(PIOInstance::SOCT, SM::SOCT, false);
@@ -535,20 +543,33 @@ void __time_critical_func(picostation::reset)(const uint8_t resetMode)
 
     g_targetPlaybackSpeed = 1;
     updatePlaybackSpeed();
+    g_audioCtrlMode = audioControlModes::NORMAL;
+    g_audioMuted = false;
+    g_audioAttenuated = false;
+    g_discImage.resetAudioPeak();
     
     if (resetMode == 2)
     {
-        if (s_dataLocation != picostation::DiscImage::DataLocation::RAM)
-		{
-			g_discImage.unload();
-			g_discImage.makeDummyCue();
-			m_i2s.menu_active = true;
-			g_discImage.set_skip_bootsector(false);
-			g_discImage.set_skip_edc(false);
-            m_mechCommand.resetBootSectorPattern();
-		}
-		picostation::DirectoryListing::gotoRoot();
-		s_dataLocation = picostation::DiscImage::DataLocation::RAM;
+        // Stop Core 1 from starting any new SD sector read and wait for an
+        // in-flight readSectorSD() to finish before freeing open track FILs.
+        s_dataLocation = picostation::DiscImage::DataLocation::RAM;
+        m_i2s.menu_active = true;
+        m_i2s.s_doorPending = false;
+        needFileCheckAction = picostation::FileListingStates::IDLE;
+        listReadyState = 0;
+        g_readyDataKind = picostation::MenuDataKind::NONE;
+        g_fileCmdSeq = g_fileCmdSeq.Load() + 1u;
+        __dmb();
+        while (m_i2s.isSdReadInProgress())
+        {
+            tight_loop_contents();
+        }
+        g_discImage.unload();
+        g_discImage.makeDummyCue();
+        g_discImage.set_skip_bootsector(false);
+        g_discImage.set_skip_edc(false);
+        m_mechCommand.resetBootSectorPattern();
+        picostation::DirectoryListing::gotoRoot();
     }
 
     mechacon_program_init(PIOInstance::MECHACON, SM::MECHACON, s_mechachonOffset, Pin::CMD_DATA);
@@ -561,6 +582,7 @@ void __time_critical_func(picostation::reset)(const uint8_t resetMode)
 	m_i2s.reinitI2S();
     g_discImage.set_skip_bootsector(false);
     m_mechCommand.resetBootSectorPattern();
+    ModChip::requestReset();
 	
 	uint64_t startTime = time_us_64();
 	

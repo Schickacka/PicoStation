@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <array>
@@ -35,8 +36,10 @@
 pseudoatomic<picostation::FileListingStates> needFileCheckAction;
 pseudoatomic<int> listReadyState;
 pseudoatomic<int> g_entryOffset;
+pseudoatomic<uint32_t> picostation::g_fileCmdSeq;
+pseudoatomic<picostation::MenuDataKind> picostation::g_readyDataKind;
 
-picostation::DiscImage::DataLocation s_dataLocation = picostation::DiscImage::DataLocation::RAM;
+pseudoatomic<picostation::DiscImage::DataLocation> s_dataLocation;
 
 static uint16_t *__time_critical_func(generateScramblingLUT)()
 {
@@ -101,8 +104,11 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
     static uint16_t img_count;
 
     needFileCheckAction = picostation::FileListingStates::IDLE;
-    listReadyState = 1;
+    listReadyState = 0;
+    picostation::g_fileCmdSeq = 0;
+    picostation::g_readyDataKind = picostation::MenuDataKind::NONE;
     g_entryOffset = 0;
+    s_dataLocation = picostation::DiscImage::DataLocation::RAM;
     
     menu_active = true;
     s_doorPending = false;
@@ -139,14 +145,22 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 		
 		if (menu_active && needFileCheckAction.Load() != picostation::FileListingStates::IDLE)
 		{
-			switch (needFileCheckAction.Load())
+			const uint32_t cmdSeq = picostation::g_fileCmdSeq.Load();
+			__dmb();
+			const auto pendingAction = needFileCheckAction.Load();
+			const uint32_t cmdArg = g_fileArg.Load();
+
+			switch (pendingAction)
 			{
 				case picostation::FileListingStates::GOTO_ROOT:
 				{
 					//printf("Processing GOTO_ROOT\n");
 					picostation::DirectoryListing::gotoRoot();
 					g_entryOffset = 0;
-					needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+					{
+						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					}
 					break;
 				}
 				
@@ -155,24 +169,33 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					//printf("Processing GOTO_PARENT\n");
 					picostation::DirectoryListing::gotoParentDirectory();
 					g_entryOffset = 0;
-					needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+					{
+						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					}
 					break;
 				}
 				
 				case picostation::FileListingStates::GOTO_DIRECTORY:
 				{
-					//printf("Processing GOTO_DIRECTORY %i\n", g_fileArg.Load());
-					picostation::DirectoryListing::gotoDirectory(g_fileArg.Load());
+					//printf("Processing GOTO_DIRECTORY %i\n", cmdArg);
+					picostation::DirectoryListing::gotoDirectory(cmdArg);
 					g_entryOffset = 0;
-					needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+					{
+						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					}
 					break;
 				}
 				
 				case picostation::FileListingStates::GET_NEXT_CONTENTS:
 				{
 					//printf("Processing GET_NEXT_CONTENTS\n");
-					g_entryOffset = g_fileArg.Load();
-					needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					g_entryOffset = static_cast<int>(cmdArg);
+					if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+					{
+						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+					}
 					break;
 				}
 				
@@ -181,13 +204,14 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					//printf("Processing MOUNT_FILE\n");
 					s_dataLocation = picostation::DiscImage::DataLocation::SDCard;
 					char filePath[c_maxFilePathLength + 1];
-					loadedImageIndex = g_fileArg.Load();
+					loadedImageIndex = cmdArg;
 					img_count = DirectoryListing::getDirectoryEntriesCount();
 
 					const bool gotPath = picostation::DirectoryListing::getPath(loadedImageIndex, filePath);
 					const bool mounted = gotPath && (FR_OK == g_discImage.load(filePath));
 
 					needFileCheckAction = picostation::FileListingStates::IDLE;
+					picostation::g_readyDataKind = picostation::MenuDataKind::NONE;
 
 					if (!mounted)
 					{
@@ -195,10 +219,13 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 
 						// Stay in the menu instead of pretending a broken image
 						// was mounted and then hanging on the first sector read.
+						picostation::cancelSubqAlarm();
+						mechCommand.cancelSoct();
 						g_discImage.unload();
 						g_discImage.makeDummyCue();
 						s_dataLocation = picostation::DiscImage::DataLocation::RAM;
 						menu_active = true;
+						s_doorPending = false;
 						reinitI2S();
 						g_driveMechanics.resetDrive();
 						g_discImage.set_skip_bootsector(false);
@@ -208,10 +235,21 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					}
 
 					//printf("image cue name:%s\n", filePath);
+					picostation::cancelSubqAlarm();
+					mechCommand.cancelSoct();
+					g_targetPlaybackSpeed = 1;
+					g_audioCtrlMode = audioControlModes::NORMAL;
+					g_audioMuted = false;
+					g_audioAttenuated = false;
+					g_discImage.resetAudioPeak();
 					menu_active = false;
+					s_doorPending = false;
 					reinitI2S();
 					g_driveMechanics.resetDrive();
+					// Reset per-game flags to defaults before the menu's post-mount
+					// EXTENDED commands (case 9) apply any user overrides.
 					g_discImage.set_skip_bootsector(false);
+					g_discImage.set_skip_edc(false);
 					mechCommand.resetBootSectorPattern();
 					modChip.reset();
 
@@ -224,7 +262,12 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					if (!listReadyState.Load())
 					{
 						picostation::DirectoryListing::getDirectoryEntries(g_entryOffset.Load());
-						listReadyState = 1;
+						if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+						{
+							picostation::g_readyDataKind = picostation::MenuDataKind::LISTING;
+							__dmb();
+							listReadyState = 1;
+						}
 					}
 					break;
 				}
@@ -233,9 +276,14 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 				{
 					if (!listReadyState.Load())
 					{
-						picostation::DirectoryListing::openCover(g_fileArg.Load());
-						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
-						listReadyState = 1;
+						picostation::DirectoryListing::openCover(cmdArg);
+						if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+						{
+							picostation::g_readyDataKind = picostation::MenuDataKind::COVER;
+							needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+							__dmb();
+							listReadyState = 1;
+						}
 					}
 					break;
 				}
@@ -245,8 +293,45 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					if (!listReadyState.Load())
 					{
 						picostation::DirectoryListing::openCfg();
-						needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
-						listReadyState = 1;
+						if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+						{
+							picostation::g_readyDataKind = picostation::MenuDataKind::CFG;
+							needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+							__dmb();
+							listReadyState = 1;
+						}
+					}
+					break;
+				}
+
+				case picostation::FileListingStates::GET_BG:
+				{
+					if (!listReadyState.Load())
+					{
+						picostation::DirectoryListing::openBg();
+						if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+						{
+							picostation::g_readyDataKind = picostation::MenuDataKind::BG;
+							needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+							__dmb();
+							listReadyState = 1;
+						}
+					}
+					break;
+				}
+
+				case picostation::FileListingStates::GET_CHEAT:
+				{
+					if (!listReadyState.Load())
+					{
+						picostation::DirectoryListing::openCheat(cmdArg);
+						if (picostation::g_fileCmdSeq.Load() == cmdSeq)
+						{
+							picostation::g_readyDataKind = picostation::MenuDataKind::CHEAT;
+							needFileCheckAction = picostation::FileListingStates::PROCESS_FILES;
+							__dmb();
+							listReadyState = 1;
+						}
 					}
 					break;
 				}
@@ -274,6 +359,8 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 			{
 				DEBUG_PRINT("disc change mount failed\n");
 
+				picostation::cancelSubqAlarm();
+				mechCommand.cancelSoct();
 				g_discImage.unload();
 				g_discImage.makeDummyCue();
 				s_dataLocation = picostation::DiscImage::DataLocation::RAM;
@@ -287,6 +374,8 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 				continue;
 			}
 			
+			picostation::cancelSubqAlarm();
+			mechCommand.cancelSoct();
 			reinitI2S();
 			g_driveMechanics.resetDrive();
 			g_discImage.set_skip_bootsector(false);
@@ -322,18 +411,26 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 			
 			if (menu_active && needFileCheckAction.Load() == picostation::FileListingStates::PROCESS_FILES && listReadyState.Load())
 			{
-				if (currentSector == 4750)
+				const auto readyKind = picostation::g_readyDataKind.Load();
+				if (currentSector == 4750 && readyKind == picostation::MenuDataKind::LISTING)
 				{
 					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::getFileListingData(), cdScramblingLUT);
-					needFileCheckAction = picostation::FileListingStates::IDLE;
 				}
-				else if (currentSector >= 4850 && currentSector < 4858)
-				{
-					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::readCover(currentSector-4850), cdScramblingLUT);
-				}
-				else if (currentSector == 4800)
+				else if (currentSector == 4800 && readyKind == picostation::MenuDataKind::CFG)
 				{
 					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::readCfg(), cdScramblingLUT);
+				}
+				else if (currentSector >= 4850 && currentSector < 4858 && readyKind == picostation::MenuDataKind::COVER)
+				{
+					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::readCover(currentSector - 4850), cdScramblingLUT);
+				}
+				else if (currentSector >= 4900 && currentSector < 4903 && readyKind == picostation::MenuDataKind::CHEAT)
+				{
+					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::readCheat(currentSector - 4900), cdScramblingLUT);
+				}
+				else if (currentSector >= 4950 && currentSector < 4984 && readyKind == picostation::MenuDataKind::BG)
+				{
+					g_discImage.buildSector(currentSector - c_leadIn, pioSamples[bufferForSDRead], picostation::DirectoryListing::readBg(currentSector - 4950), cdScramblingLUT);
 				}
 				else
 				{
@@ -347,7 +444,11 @@ not_menu_request:
 				startTime = time_us_64();
 #endif
 				// Load the next sector
-				g_discImage.readSector(pioSamples[bufferForSDRead], currentSector - c_leadIn, s_dataLocation, cdScramblingLUT);
+				m_sdReadInProgress = true;
+				__dmb();
+				g_discImage.readSector(pioSamples[bufferForSDRead], currentSector - c_leadIn, s_dataLocation.Load(), cdScramblingLUT);
+				__dmb();
+				m_sdReadInProgress = false;
 #if DEBUG_I2S
 				endTime = time_us_64()-startTime;
 				

@@ -123,3 +123,56 @@ static inline void i2s_data_program_init(PIO pio, uint8_t sm, uint8_t offset,
 }
 
 %}
+
+; Hardware-timed SCEX 8N2 transmitter on PIO1 (20 PIO cycles per bit, autopull
+; every 11 bits = 1 start + 8 data + 2 stop). At sys_clk = 271.2 MHz:
+;   clkdiv = bitTimeUs * 13.56f
+;   - 4000 us (250.000 bps stock)  -> clkdiv = 54240.000 (0.0000% error)
+;   - 2475 us (404.040 bps PU8_OC) -> clkdiv = 33561.000 (0.0000% error)
+;   - 2252 us (444.050 bps PU18_OC)-> clkdiv = 30537.120 (0.0003% error)
+.program scex_tx
+.wrap_target
+    out pins, 1 [19]
+.wrap
+
+% c-sdk {
+static inline void scex_tx_program_init(PIO pio, uint8_t sm, uint8_t offset, uint8_t pin, float clkdiv)
+{
+    pio_gpio_init(pio, pin);
+    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    pio_sm_config sm_config = scex_tx_program_get_default_config(offset);
+    sm_config_set_out_pins(&sm_config, pin, 1);
+    sm_config_set_out_shift(&sm_config, true, true, 11);
+    sm_config_set_fifo_join(&sm_config, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&sm_config, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &sm_config);
+}
+%}
+
+; Open-drain variant: pin output latch stays 0; pindir=1 drives LOW (idle/stop),
+; pindir=0 releases Hi-Z (HIGH via pull-up). Words pushed to FIFO are inverted.
+.program scex_tx_od
+.wrap_target
+    out pindirs, 1 [19]
+.wrap
+
+% c-sdk {
+static inline void scex_tx_od_program_init(PIO pio, uint8_t sm, uint8_t offset, uint8_t pin, float clkdiv)
+{
+    pio_gpio_init(pio, pin);
+    gpio_pull_up(pin);
+    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    pio_sm_config sm_config = scex_tx_od_program_get_default_config(offset);
+    sm_config_set_out_pins(&sm_config, pin, 1);
+    sm_config_set_out_shift(&sm_config, true, true, 11);
+    sm_config_set_fifo_join(&sm_config, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&sm_config, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &sm_config);
+}
+%}
