@@ -7,8 +7,8 @@ set(PROJECT_NAME "picostation-menu")
 project(
     ${PROJECT_NAME}
     LANGUAGES    C CXX ASM
-    VERSION      1.0.0
-    DESCRIPTION  "PicoMenu Release 1 (RC5 parity + PT-BR + OWMC GameID + Async Cover Fix)"
+    VERSION      1.1.0
+    DESCRIPTION  "PicoMenu Release 1.1 (RC5 parity + PT-BR + OWMC GameID + SIO0 Rumble Fix)"
 )
 
 include(ps1-bare-metal/cmake/setup.cmake)

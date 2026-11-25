@@ -33,8 +33,8 @@
 #define MAX_FILES     4096
 #define SFX_VOL       10922
 
-#define PICOSTATION_RELEASE_STR "Release 1"
-#define PICOMENU_RELEASE_STR    "Release 1"
+#define PICOSTATION_RELEASE_STR "Release 1.1"
+#define PICOMENU_RELEASE_STR    "Release 1.1"
 
 #define COVER_PART_BYTES 2114
 #define COVER_PARTS      8
@@ -623,7 +623,8 @@ int main(int argc, const char **argv) {
     // Check lid closed & sync TOC before reading config.ini / wallpaper / root listing
     waitUntilLidClosed(isPal);
 
-    uint8_t mcpPresent = checkMCPpresent();
+    // Match official RC5: do not probe memory cards with 0x81 0x53 / 0x81 0x20
+    // on startup (sendGameID always sends 0x81 0x21 unconditionally to both ports).
     rc5ConfigLoad();
     rc5WallpaperLoad();
     file_manager_init();
@@ -788,7 +789,7 @@ int main(int argc, const char **argv) {
             Rc5BootMode mode = (pendingAction == MENU_ACTION_MOUNT_REGULAR) ? BOOT_MODE_REGULAR :
                                (pendingAction == MENU_ACTION_MOUNT_CHEATS)  ? BOOT_MODE_CHEATS  :
                                                                               BOOT_MODE_FAST;
-            rc5BootStart(mode, selectedIdx, mcpPresent);
+            rc5BootStart(mode, selectedIdx, 0x03u);
             s_overlay = OVERLAY_BOOTING;
         }
 

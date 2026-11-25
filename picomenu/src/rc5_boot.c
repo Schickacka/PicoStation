@@ -198,6 +198,11 @@ static void biosCallKernelTable(int idx) {
 // Official RC5 leaves DMA_DPCR = 0x0bbbbbbb and COP0_STATUS_CU2 = 1, and lets BIOS C(07h)
 // (InstallExceptionHandlers) reinstall the fresh BIOS exception vectors.
 static void rc5FastExecViaTrampoline(bool installCheats) {
+    // Ensure SIO0 /DTR is released and no stale DSR IRQ remains before BIOS kernel reset
+    SIO_CTRL(0) &= ~SIO_CTRL_DTR;
+    SIO_CTRL(0) |= SIO_CTRL_ACKNOWLEDGE;
+    IRQ_STAT     = ~(1 << IRQ_SIO0);
+
     biosEnterCriticalSection();
     cop0_setReg(COP0_STATUS, cop0_getReg(COP0_STATUS) & ~0x0401u);
 
@@ -313,9 +318,9 @@ void rc5BootStepAndDraw(DMAChain *chain, const TextureInfo *font) {
         }
 
         case 3: {
-            // DEFINITIVE MULTI-TRACK CDDA FIX (Tomb Raider 57-track bug):
-            // Retry up to 16 times spaced 20 frames (~330 ms) apart (~5.3s extra tolerance)
-            // while PicoStation finishes opening dozens of .bin files on slower SD cards.
+            // Multi-track CDDA resilience (e.g. Tomb Raider 57 tracks):
+            // Retry up to 16 times spaced 20 frames (~330 ms) apart, issuing a full
+            // CDROM_CMD_INIT on retries 4 & 8 if HC05 ever needs a clean TOC rescan.
             if (s_frameCounter > 0) {
                 s_frameCounter--;
                 break;
@@ -325,7 +330,11 @@ void rc5BootStepAndDraw(DMAChain *chain, const TextureInfo *font) {
             } else if (s_cdCheckRetries < 16) {
                 s_cdCheckRetries++;
                 if (!waitingForInt5) {
-                    // INT5 error -> Pico was still finishing MOUNT_FILE; refresh TOC and retry
+                    if (s_cdCheckRetries == 4 || s_cdCheckRetries == 8) {
+                        issueCDROMCommand(CDROM_CMD_INIT, NULL, 0);
+                        waitForINT3();
+                        waitForINT2();
+                    }
                     updateCDROM_TOC();
                 }
                 s_frameCounter = 20;

@@ -1,19 +1,33 @@
-# PicoStation & PicoMenu — Schickacka Release 1
+# PicoStation & PicoMenu — Schickacka Release 1.1
 
-Fork open-source do [megavolt85/PicoStation](https://github.com/megavolt85/PicoStation) (originalmente criado por [paulocode/picostation](https://github.com/paulocode/picostation)) combinado com o **PicoMenu Release 1** (menu open-source reescrito sobre o [megavolt85/picostation-menu](https://github.com/megavolt85/picostation-menu) com paridade total ao menu fechado RC5), para Raspberry Pi Pico (`RP2040` / `RP2350`) no PlayStation 1 (`PU-8` e `PU-18`).
+Fork open-source do [megavolt85/PicoStation](https://github.com/megavolt85/PicoStation) (originalmente criado por [paulocode/picostation](https://github.com/paulocode/picostation)) combinado com o **PicoMenu Release 1.1** (menu open-source reescrito sobre o [megavolt85/picostation-menu](https://github.com/megavolt85/picostation-menu) com paridade total ao menu fechado RC5), para Raspberry Pi Pico (`RP2040` / `RP2350`) no PlayStation 1 (`PU-8` e `PU-18`).
 
 ## Estado atual
 
-**Release 1** (tanto **PicoStation** quanto **PicoMenu**) compila com **0 warnings** em toda a matriz de 16 variantes (`PU-18`/`PU-8`, regiões `SCEA`/`SCEE`/`SCEI`/`Generic`, com e sem overclock `_OC`) e foi **validada em hardware real PS1 `PU-8` (`_OC`, BIOS japonesa `SCEI`, OpenWirelessMC / MemCard PRO)** além de **6 cenários HIL dual-core (ASan + UBSan)** e testes automatizados no DuckStation.
+**Release 1.1** (tanto **PicoStation** quanto **PicoMenu**) compila com **0 warnings** em toda a matriz de 16 variantes (`PU-18`/`PU-8`, regiões `SCEA`/`SCEE`/`SCEI`/`Generic`, com e sem overclock `_OC`) e foi **validada em hardware real PS1 `PU-8` (`_OC`, BIOS japonesa `SCEI`, OpenWirelessMC / MemCard PRO, BlueRetro v0.7.3)** além de **6 cenários HIL dual-core (ASan + UBSan + LSan)** e testes automatizados no DuckStation.
 
-### Validado em console físico (`PU-8 OC SCEI` + `OpenWirelessMC`)
-- **Fast Boot & Full Boot:** *Resident Evil 2 (Dual Shock)*, *Resident Evil 3: Nemesis*, *PaRappa the Rapper (BRA — tradução PT-BR com logo customizado)* funcionando tanto em Fast Boot quanto em Full Boot / Reset físico.
-- **PicoMenu Release 1:** interface em `pt_BR` (`lang=8`), capas 128×128 (`8bpp`) em pastas e `.cue`, rolagem suave e sem travamentos mesmo ao abrir pastas rapidamente antes do carregamento da capa, envio de **GameID (`0x21`)** automático para **OpenWirelessMC / MemCard PRO / SD2PSX**, suporte a cheats (`.cht`) e `config.ini` / `background.raw`.
-- **Limitação conhecida (em trabalho para a próxima atualização):** jogos multi-track extremos com dezenas de arquivos `.bin` separados (ex.: *Tomb Raider* com 57 trilhas CDDA) ainda podem reportar "Imagem CDDA" no Fast Boot (funcionando normalmente ao acionar Reset físico).
+### Validado em console físico (`PU-8 OC SCEI` + `OpenWirelessMC` + `BlueRetro`)
+- **Fast Boot & Full Boot:** *Resident Evil 2 (Dual Shock)*, *Resident Evil 3: Nemesis*, *PaRappa the Rapper (BRA — tradução PT-BR com logo customizado)* e *Tomb Raider (57 arquivos `.bin` CDDA separados)* abrindo de primeira tanto em Fast Boot quanto em Full Boot.
+- **PicoMenu Release 1.1:** interface em `pt_BR` (`lang=8`), capas 128×128 (`8bpp`) em pastas e `.cue`, rolagem suave sem travamentos, envio de **GameID (`0x21`)** automático para **OpenWirelessMC / MemCard PRO / SD2PSX** sem disparo espúrio de vibração no controle, suporte a cheats (`.cht`) e `config.ini` / `background.raw`.
 
 ---
 
-## O que foi feito na Release 1
+## Novidades da Release 1.1
+
+### 1. Suporte completo a jogos multi-track CDDA extremos (ex.: *Tomb Raider* com 57 `.bin`)
+- **Carregamento sob demanda de trilhas de áudio (`third_party/posix_file.c`, `third_party/posix_file.h`, `src/disc_image.cpp`):** em vez de manter dezenas de `FIL` abertos simultaneamente (esgotando SRAM e levando vários segundos em `MOUNT_FILE`), o `DiscImage::load()` faz uma única varredura `f_opendir`/`f_readdir` (`DirSizeCache`) para coletar os tamanhos de todos os `.bin` em ~15 ms, mantém a trilha 1 (dados) fixa aberta e abre sob demanda com cache limitado a 1 trilha de áudio por vez.
+- **Ordem Red Book / Sony no Lead-In TOC (`src/disc_image.cpp`):** os pontos de controle `A0` (primeira trilha), `A1` (última trilha) e `A2` (lead-out) agora são emitidos nos primeiros 9 setores (`~120 ms`) antes dos pontos individuais de cada trilha (em vez de após `57 × 3 = 171` setores / `2,28 s`), permitindo que o `HC05`/Mechacon reconheça imediatamente discos com 57+ trilhas no Fast Boot sem reportar *"Imagem CDDA"*.
+- **Proteção contra leitura durante `MOUNT_FILE` (`include/disc_image.h`, `src/i2s.cpp`) e recuperação `CDROM_CMD_INIT` (`picomenu/src/rc5_boot.c`):** cancela o `SubQ` alarm antes de trocar o disco, protege `m_discLoading` no Core 1 e adiciona retry com `CDROM_CMD_INIT` no menu caso o Mechacon precise reescanear a TOC.
+
+### 2. Correção de vibração espúria do controle ao abrir o PicoMenu e ao lançar jogos (`picomenu/src/controller.c`, `main.c`, `rc5_boot.c`)
+- **Ordem correta de ACK no SIO0 (`controller.c`):** corrigido `exchangePacket()` e `sendPacketNoAcknowledge()` para limpar o latch interno de `/DSR` (`SIO_CTRL_ACKNOWLEDGE`) **antes** de limpar `IRQ_STAT` (`~(1 << IRQ_SIO0)`) e antes de baixar `/DTR`, além de limpar o latch de `/DSR` e drenar o FIFO RX ao sair de `sendPacketNoAcknowledge()` (onde o OWMC/MemCard PRO pulsa `/DSR` durante o envio do GameID `0x81 0x21`).
+  - Anteriormente, o `IRQ_SIO0` residual fazia o `waitForAcknowledge()` seguinte retornar em `0 us` (antes do byte `0x01` terminar de ser transmitido), dessincronizando o pacote `0x01 0x42` seguinte e fazendo adaptadores como o BlueRetro lerem bytes residuais do GameID (`0x15`, `'c'`) como comando de vibração dos motores.
+- **Sincronização do byte de endereço (`exchangeByte(address)`):** aguarda o término completo do shift de `0x01`/`0x81` antes de checar `/DSR`, impedindo colisão entre o byte 0 e o byte 1 (`0x42`) no barramento SIO0.
+- **Inicialização limpa do barramento (`initControllerBus`, `main.c`, `rc5_boot.c`):** removido `SIO_CTRL_RESET` (alinhado ao RC5 `FUN_8001c39c`) e removida a chamada ociosa `checkMCPpresent()` na abertura do menu (que disparava sondas `0x81 0x53`/`0x81 0x20` desnecessárias antes da primeira leitura do controle), além de liberar `/DTR` e limpar `IRQ_SIO0` antes do `LoadExec`.
+
+---
+
+## O que também está incluído desde a Release 1
 
 ### Firmware — PicoStation (Release 1)
 
@@ -82,7 +96,7 @@ Requer `cmake >= 3.24`, `ninja`, `arm-none-eabi-gcc` e [Raspberry Pi Pico SDK 2.
 git submodule update --init --recursive
 ./tools/build_release_matrix.sh
 ```
-As 16 variantes (`PU18`/`PU8` × `SCEA`/`SCEE`/`SCEI`/`Generic` × padrão/`_OC`) serão geradas em `releases/Release_1/`.
+As 16 variantes (`PU18`/`PU8` × `SCEA`/`SCEE`/`SCEI`/`Generic` × padrão/`_OC`) serão geradas em `releases/Release_1.1/`.
 
 ### Opções do CMake
 | Opção | Valores | Descrição |

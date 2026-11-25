@@ -47,6 +47,7 @@ class DiscImage {
     volatile uint16_t m_audioPeakMax = 0;
     uint8_t m_audioLevelSide = 0;
     volatile bool m_hasData = false;
+    volatile bool m_discLoading = false;
     volatile bool skip_bootsector = false;
     volatile bool skip_edc = false;
 };

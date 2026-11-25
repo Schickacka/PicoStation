@@ -202,6 +202,8 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 				case picostation::FileListingStates::MOUNT_FILE:
 				{
 					//printf("Processing MOUNT_FILE\n");
+					picostation::cancelSubqAlarm();
+					mechCommand.cancelSoct();
 					s_dataLocation = picostation::DiscImage::DataLocation::SDCard;
 					char filePath[c_maxFilePathLength + 1];
 					loadedImageIndex = cmdArg;
@@ -227,6 +229,7 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 						menu_active = true;
 						s_doorPending = false;
 						reinitI2S();
+						lastSector = -1;
 						g_driveMechanics.resetDrive();
 						g_discImage.set_skip_bootsector(false);
 						mechCommand.resetBootSectorPattern();
@@ -245,6 +248,7 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 					menu_active = false;
 					s_doorPending = false;
 					reinitI2S();
+					lastSector = -1;
 					g_driveMechanics.resetDrive();
 					// Reset per-game flags to defaults before the menu's post-mount
 					// EXTENDED commands (case 9) apply any user overrides.

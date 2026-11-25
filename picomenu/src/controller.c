@@ -51,12 +51,9 @@
 #endif
 
 void initControllerBus(void) {
-     // Reset the serial interface, initialize it with the settings used by
-     // controllers and memory cards (250000bps, 8 data bits) and configure it to
-     // send a signal to the interrupt controller whenever the DSR input is
-     // pulsed (see below).
-     SIO_CTRL(0) = SIO_CTRL_RESET;
- 
+     // Match official RC5 FUN_8001c39c (250000 bps, 8 data bits, DSR IRQ enabled)
+     // without SIO_CTRL_RESET so /DTR and /SCK never glitch on menu entry, then
+     // drain any stale RX bytes and clear SIO0 + INTC IRQ latches in order.
      SIO_MODE(0) = 0
          | SIO_MODE_BAUD_DIV1
          | SIO_MODE_DATA_8;
@@ -64,7 +61,13 @@ void initControllerBus(void) {
      SIO_CTRL(0) = 0
          | SIO_CTRL_TX_ENABLE
          | SIO_CTRL_RX_ENABLE
-         | SIO_CTRL_DSR_IRQ_ENABLE;
+         | SIO_CTRL_DSR_IRQ_ENABLE
+         | SIO_CTRL_ACKNOWLEDGE;
+
+     while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY) {
+         (void)SIO_DATA(0);
+     }
+     IRQ_STAT = ~(1 << IRQ_SIO0);
 }
  
 bool waitForAcknowledge(int timeout) {
@@ -127,17 +130,28 @@ bool waitForAcknowledge(int timeout) {
      bool reenable = disableInterrupts();
 
      delayMicroseconds(DTR_PRE_DELAY);
+     // Drain any stale RX FIFO bytes and clear SIO0's internal DSR IRQ latch
+     // FIRST, then clear INTC IRQ_STAT, BEFORE asserting /DTR. Clearing IRQ_STAT
+     // before SIO_CTRL_ACKNOWLEDGE leaves IRQ_SIO0 latched if a prior 0x81
+     // memory-card packet (e.g. OWMC GameID) pulsed /DSR, causing a false 0 us
+     // ACK that desyncs the next 0x01 0x42 poll and triggers spurious rumble.
+     while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY) {
+         (void)SIO_DATA(0);
+     }
+     SIO_CTRL(0) |= SIO_CTRL_ACKNOWLEDGE;
      IRQ_STAT     = ~(1 << IRQ_SIO0);
-     SIO_CTRL(0) |= SIO_CTRL_DTR | SIO_CTRL_ACKNOWLEDGE;
+     SIO_CTRL(0) |= SIO_CTRL_DTR;
      delayMicroseconds(DTR_DELAY);
  
      int respLength = 0;
  
-     SIO_DATA(0) = address;
+     // Wait for the address byte to finish shifting out cleanly before checking
+     // /DSR so byte 1 (0x42) can never collide with byte 0 (0x01) on the bus.
+     (void)exchangeByte((uint8_t)address);
  
      if (waitForAcknowledge(DSR_TIMEOUT)) {
          while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY)
-             SIO_DATA(0);
+             (void)SIO_DATA(0);
  
          while (respLength < maxRespLength) {
              if (reqLength > 0) {
@@ -154,10 +168,15 @@ bool waitForAcknowledge(int timeout) {
          }
      }
  
-     // Release DTR, allowing the device to go idle.
+     // Release DTR, allowing the device to go idle, then clear any trailing DSR latch.
      delayMicroseconds(DTR_DELAY);
      SIO_CTRL(0) &= ~SIO_CTRL_DTR;
      delayMicroseconds(DTR_POST_DELAY);
+     while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY) {
+         (void)SIO_DATA(0);
+     }
+     SIO_CTRL(0) |= SIO_CTRL_ACKNOWLEDGE;
+     IRQ_STAT     = ~(1 << IRQ_SIO0);
 
      if (reenable) {
          enableInterrupts();
@@ -271,8 +290,12 @@ void sendPacketNoAcknowledge(
     bool reenable = disableInterrupts();
 
     delayMicroseconds(DTR_PRE_DELAY);
+    while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY) {
+        (void)SIO_DATA(0);
+    }
+    SIO_CTRL(0) |= SIO_CTRL_ACKNOWLEDGE;
     IRQ_STAT     = ~(1 << IRQ_SIO0);
-    SIO_CTRL(0) |= SIO_CTRL_DTR | SIO_CTRL_ACKNOWLEDGE;
+    SIO_CTRL(0) |= SIO_CTRL_DTR;
     delayMicroseconds(DTR_DELAY);
 
     exchangeByte((uint8_t)address);
@@ -286,6 +309,15 @@ void sendPacketNoAcknowledge(
     delayMicroseconds(DTR_DELAY);
     SIO_CTRL(0) &= ~SIO_CTRL_DTR;
     delayMicroseconds(DTR_POST_DELAY);
+
+    // Clear SIO0's internal DSR IRQ latch (from OWMC/MemCard PRO ACKs during
+    // 0x81 0x21 GameID) FIRST, then IRQ_STAT, so the next 0x01 0x42 poll
+    // starts completely synchronized and scrubs any shared SPI RX buffer.
+    while (SIO_STAT(0) & SIO_STAT_RX_NOT_EMPTY) {
+        (void)SIO_DATA(0);
+    }
+    SIO_CTRL(0) |= SIO_CTRL_ACKNOWLEDGE;
+    IRQ_STAT     = ~(1 << IRQ_SIO0);
 
     if (reenable) {
         enableInterrupts();

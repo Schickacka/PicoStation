@@ -6,7 +6,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-RELEASE_TAG="${1:-Release_1}"
+RELEASE_TAG="${1:-Release_1.1}"
 BUILD="$ROOT/tools/build-src"
 OUT_ROOT="${2:-$ROOT/releases/$RELEASE_TAG}"
 SUBQ_CRC="${3:-OFF}"
