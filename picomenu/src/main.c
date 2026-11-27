@@ -26,6 +26,8 @@
 #include "rc5_lang.h"
 #include "rc5_proto.h"
 #include "rc5_ui.h"
+#include "picoplayer.h"
+#include "pu20_skin.h"
 
 #define SCREEN_WIDTH  320
 #define SCREEN_HEIGHT 240
@@ -33,8 +35,8 @@
 #define MAX_FILES     4096
 #define SFX_VOL       10922
 
-#define PICOSTATION_RELEASE_STR "Release 1.2"
-#define PICOMENU_RELEASE_STR    "Release 1.2"
+#define PICOSTATION_RELEASE_STR "Release 2.0"
+#define PICOMENU_RELEASE_STR    "Release 2.0"
 
 #define COVER_PART_BYTES 2114
 #define COVER_PARTS      8
@@ -52,7 +54,8 @@ typedef enum {
     MENU_ACTION_MOUNT_REGULAR = 5,
     MENU_ACTION_BOOTLOADER = 6,
     MENU_ACTION_OPEN_OPTIONS = 7,
-    MENU_ACTION_MOUNT_CHEATS = 8
+    MENU_ACTION_MOUNT_CHEATS = 8,
+    MENU_ACTION_OPEN_PLAYER = 9
 } MenuAction;
 
 typedef enum {
@@ -80,6 +83,9 @@ static uint8_t     s_dirDepth = 0;
 static bool        s_creditsOpen = false;
 static OverlayMode s_overlay = OVERLAY_NONE;
 static int         s_optSelected = 0;
+static bool        s_playerOpen = false;
+static uint16_t    s_playerPrev = 0;
+static uint32_t    s_frame = 0;
 
 // Smooth text scroll & async cover loader state (matching RC5 FUN_8001295c)
 static uint8_t s_coverDelay = 10;
@@ -404,7 +410,7 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
     const int pageSize = styleFull ? 13 : 15;
     const int maxTextX = boxX + boxW - 2;
 
-    rc5DrawBox(chain, boxX, boxY, boxW, boxH, true, g_cfg.filelist, g_cfg.hasWallpaperTex);
+    rc5DrawBox(chain, boxX, boxY, boxW, boxH, true, g_cfg.filelist, true);
     rc5DrawTexture(chain, &s_logoTex, styleFull ? 96 : 185, styleFull ? 8 : 14);
 
     uint16_t pressed = (uint16_t)(~prevButtons & buttons);
@@ -493,6 +499,10 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
             *outAction = MENU_ACTION_GOTO_PARENT;
             sound_playOnChannel(&s_sfxSlide, SFX_VOL, SFX_VOL, 1);
         }
+        if ((pressed & BUTTON_MASK_SQUARE) && s_dirDepth == 0 && *outAction == MENU_ACTION_NONE) {
+            *outAction = MENU_ACTION_OPEN_PLAYER;
+            sound_playOnChannel(&s_sfxSlide, SFX_VOL, SFX_VOL, 1);
+        }
     }
 
     // Counter "X de Y"
@@ -565,20 +575,56 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
     if (s_overlay == OVERLAY_NONE) {
         char footer[128];
         if (fileCount > 0 && s_dirDepth > 0) {
-            snprintf(footer, sizeof(footer), "%c %s\t\t\t\t %c %s",
+            snprintf(footer, sizeof(footer), "%c %s   %c %s",
                      (char)g_cfg.openGlyph, g_lang->open,
                      (char)g_cfg.backGlyph, g_lang->back);
         } else if (fileCount > 0) {
-            snprintf(footer, sizeof(footer), "%c %s\t\t\x8c %s",
+            snprintf(footer, sizeof(footer), "%c %s   \x8c %s",
                      (char)g_cfg.openGlyph, g_lang->open, g_lang->credits);
         } else if (s_dirDepth > 0) {
-            snprintf(footer, sizeof(footer), "\t\t\t\t %c %s",
+            snprintf(footer, sizeof(footer), "%c %s",
                      (char)g_cfg.backGlyph, g_lang->back);
         } else {
-            snprintf(footer, sizeof(footer), "\t\t\x8c %s", g_lang->credits);
+            snprintf(footer, sizeof(footer), "\x8c %s", g_lang->credits);
         }
-        rc5PrintString(chain, &s_fontTex, 12, 215, footer, 312);
+        rc5PrintString(chain, &s_fontTex, 10, 215, footer, s_dirDepth == 0 ? 232 : 312);
+        if (s_dirDepth == 0) {
+            rc5PrintString(chain, &s_fontTex, 236, 215, "\x90 PicoPlayer", 316);
+        }
     }
+}
+
+static void drawLoadingModal(const char *title, bool useWallpaper) {
+    waitForDMADone();
+    waitForGP0Ready();
+    DMAChain *lchain = &s_dmaChains[0];
+    lchain->nextPacket = lchain->data;
+    uint32_t *lp = allocatePacket(lchain, 4);
+    lp[0] = gp0_texpage(0, true, false);
+    lp[1] = gp0_fbOffset1(0, 0);
+    lp[2] = gp0_fbOffset2(SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+    lp[3] = gp0_fbOrigin(0, 0);
+    if (useWallpaper && g_cfg.hasWallpaperTex) {
+        rc5DrawTexture(lchain, &g_cfg.bgTexLeft, 0, 0);
+        rc5DrawTexture(lchain, &g_cfg.bgTexRight, 256, 0);
+    } else {
+        pu20DrawShellBackground(lchain, SCREEN_WIDTH, SCREEN_HEIGHT, s_frame);
+    }
+    rc5DrawBox(lchain, 48, 92, 224, 54, true, g_cfg.filelist, false);
+    {
+        int tw = rc5MeasureString(title);
+        int lw = rc5MeasureString(g_lang->loading);
+        rc5PrintString(lchain, &s_fontTex, 160 - tw / 2, 102, title, 268);
+        rc5PrintString(lchain, &s_fontTex, 160 - lw / 2, 122, g_lang->loading, 268);
+    }
+    *(lchain->nextPacket) = gp0_endTag(0);
+    waitForGP0Ready();
+    waitForVblank();
+    sendLinkedList(lchain->data);
+    waitForDMADone();
+    waitForGP0Ready();
+    GPU_GP1 = gp1_fbOffset(0, 0);
+    waitForVblank();
 }
 
 int main(int argc, const char **argv) {
@@ -636,29 +682,74 @@ int main(int argc, const char **argv) {
     uint16_t prevButtons = getButtons(g_cfg.openMask, g_cfg.backMask);
 
     for (;;) {
-        int bufX = secondFrame ? SCREEN_WIDTH : 0;
+        s_frame++;
+        // Drain any previous frame's GPU DMA before polling SIO0 so the PS1
+        // bus is 100% idle during controller/BlueRetro exchange (eliminates
+        // transient mid-scroll rumble blips).
+        waitForDMADone();
+        waitForGP0Ready();
+        uint16_t buttons = getButtons(g_cfg.openMask, g_cfg.backMask);
+
+        if (s_playerOpen) {
+            DMAChain *chain = &s_dmaChains[0];
+            chain->nextPacket = chain->data;
+
+            bool leave = picoplayer_update_and_draw(chain, &s_fontTex, buttons, s_playerPrev);
+            s_playerPrev = buttons;
+            prevButtons  = buttons;
+
+            if (leave) {
+                picoplayer_begin_exit();
+                drawLoadingModal("PicoMenu", false);
+                picoplayer_finish_exit();
+                if (g_cfg.wallpaper) {
+                    rc5WallpaperLoad();
+                }
+                fileCount     = loadDirectoryListing(PICO_CMD_GOTO_ROOT, 0);
+                selectedIdx   = 0;
+                s_dirDepth    = 0;
+                s_playerOpen  = false;
+                secondFrame   = false;
+                pendingAction = MENU_ACTION_NONE;
+                resetSelectionEffects();
+                continue;
+            }
+
+            if (chain->nextPacket != chain->data) {
+                *(chain->nextPacket) = gp0_endTag(0);
+                waitForGP0Ready();
+                waitForVblank();
+                picoplayer_present_vblank();
+                sendLinkedList(chain->data);
+            } else {
+                waitForVblank();
+                picoplayer_present_vblank();
+            }
+            continue;
+        }
+
+        int drawX = secondFrame ? SCREEN_WIDTH : 0;
+        int dispX = secondFrame ? 0 : SCREEN_WIDTH;
         DMAChain *chain = &s_dmaChains[secondFrame];
         secondFrame = !secondFrame;
 
-        GPU_GP1 = gp1_fbOffset(bufX, 0);
+        // True double-buffering: display the already-completed frontbuffer (dispX)
+        // while building and rendering the next frame into the hidden backbuffer (drawX).
+        GPU_GP1 = gp1_fbOffset(dispX, 0);
         chain->nextPacket = chain->data;
 
         uint32_t *ptr = allocatePacket(chain, 4);
         ptr[0] = gp0_texpage(0, true, false);
-        ptr[1] = gp0_fbOffset1(bufX, 0);
-        ptr[2] = gp0_fbOffset2(bufX + SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
-        ptr[3] = gp0_fbOrigin(bufX, 0);
+        ptr[1] = gp0_fbOffset1(drawX, 0);
+        ptr[2] = gp0_fbOffset2(drawX + SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+        ptr[3] = gp0_fbOrigin(drawX, 0);
 
         if (g_cfg.hasWallpaperTex) {
             rc5DrawTexture(chain, &g_cfg.bgTexLeft, 0, 0);
             rc5DrawTexture(chain, &g_cfg.bgTexRight, 256, 0);
         } else {
-            rc5DrawBox(chain, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false, g_cfg.bg, false);
+            pu20DrawShellBackground(chain, SCREEN_WIDTH, SCREEN_HEIGHT, s_frame);
         }
-
-        waitForDMADone();
-        waitForGP0Ready();
-        uint16_t buttons = getButtons(g_cfg.openMask, g_cfg.backMask);
 #ifdef PICO_MOCK_UI
         // Automated D-pad + cover-interruption + Options + Credits stress script
         static uint32_t s_mockFrame = 0;
@@ -785,6 +876,14 @@ int main(int argc, const char **argv) {
         } else if (pendingAction == MENU_ACTION_OPEN_OPTIONS) {
             s_optSelected = 0;
             s_overlay = OVERLAY_OPTIONS;
+        } else if (pendingAction == MENU_ACTION_OPEN_PLAYER) {
+            /* Show a clean "PicoPlayer / Aguarde, carregando..." modal on screen
+             * while picoplayer_enter() scans SD:/PicoPlayer/ and preloads covers. */
+            drawLoadingModal("PicoPlayer", true);
+
+            picoplayer_enter();
+            s_playerOpen = true;
+            s_playerPrev = buttons;
         } else if (pendingAction == MENU_ACTION_MOUNT_FAST ||
                    pendingAction == MENU_ACTION_MOUNT_REGULAR ||
                    pendingAction == MENU_ACTION_MOUNT_CHEATS) {

@@ -9,6 +9,7 @@
 #include "ff.h"
 #include "hardware/sync.h"
 #include "logging.h"
+#include "pico_audio.h"
 #include "picostation.h"
 #include "subq.h"
 #include "third_party/posix_file.h"
@@ -221,15 +222,17 @@ picostation::SubQ::Data __time_critical_func(picostation::DiscImage::generateSub
 {
     SubQ::Data subqdata{};
 
-    if (m_discLoading)
+    if (g_picoAudio.isActive())
+    {
+        subqdata = g_picoAudio.generateSubQ(sector - c_leadIn);
+    }
+    else if (m_discLoading)
     {
         return subqdata;
     }
-
-    int sector_track;
-
-    if (m_cueDisc.trackCount >= 1)
+    else if (m_cueDisc.trackCount >= 1)
     {
+        int sector_track;
         if (sector < c_leadIn)  // Lead-in area
         {
             // Red Book / Sony PlayStation standard Lead-In TOC order:

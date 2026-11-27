@@ -2,7 +2,24 @@
 
 Emulador de drive óptico (ODE) 100% open-source para **PlayStation 1 (`PU-8` e `PU-18`)** baseado no **Raspberry Pi Pico (`RP2040`)**, acompanhado do **PicoMenu** (menu open-source embarcado), **PicoPlayer** (player de áudio MP3/WAV com visualizador SoundScope) e **PicoManager** (gerenciador desktop de cartão SD para Windows, Linux e macOS).
 
-> **Histórico de versões, correções e downloads:** consulte sempre a aba [**Releases**](https://github.com/Schickacka/PicoStation/releases).
+> **Downloads e histórico de versões:** consulte sempre a aba [**Releases**](https://github.com/Schickacka/PicoStation/releases).
+> **Documentação completa (Wiki):** acesse o [**Índice da Documentação**](docs/README.md).
+
+---
+
+## Componentes do ecossistema
+
+- **PicoStation (Firmware RP2040):** emula o barramento óptico do PlayStation 1 em tempo real usando os dois núcleos e PIOs do RP2040, com suporte a placas `PU-8` e `PU-18`, Overclock (`_OC`), regiões `SCEA`/`SCEE`/`SCEI`/`Generic`, jogos multi-trilha CDDA, LibCrypt e decodificação de áudio em tempo real.
+  [Documentação completa do Firmware →](docs/PicoStation-Firmware.md)
+
+- **PicoMenu (Menu embarcado PS1):** interface open-source carregada diretamente no PlayStation 1 para navegar pelas pastas do cartão microSD, exibir capas `.cov`, usar `Fast Boot` ou `Full Boot`, configurar `Overclock` / `EDC` / `Bootsector`, aplicar cheats GameShark (`.cht`), enviar GameID para Memory Cards virtuais (`OpenWirelessMC`, `MemCard PRO`, `SD2PSX`) e iniciar o PicoPlayer.
+  [Documentação completa do PicoMenu →](docs/PicoMenu.md)
+
+- **PicoPlayer (Player de Áudio & SoundScope):** player de música nativo para o PS1 com visual inspirado no BIOS Sony PU-20 (`640×480i`), capaz de reproduzir arquivos `.mp3` (CBR/VBR até 320 kbps) e `.wav` diretamente de `SD:/PicoPlayer/` com metadados ID3, capas de álbum e o **SoundScope** com **22 visualizadores gráficos** em tempo real (`320×240p`).
+  [Documentação completa do PicoPlayer →](docs/PicoPlayer.md)
+
+- **PicoManager (Aplicativo Desktop — Windows, Linux e macOS):** ferramenta gráfica para preparar o cartão microSD no computador — organiza jogos e converte capas `.cov`, importa e converte músicas (`.flac`, `.wav`, `.mp3`, `.ogg`, `.m4a`, `.opus`) com alta fidelidade LAME (`VBR V0`, `320 kbps CBR` ou `WAV` sem perdas), gera o índice acelerado `index.pp` com deduplicação de capas e edita o `config.ini` e papel de parede (`background.raw`).
+  [Documentação completa do PicoManager →](docs/PicoManager.md)
 
 ---
 
@@ -58,40 +75,7 @@ Cada release disponibiliza **16 variantes** para Raspberry Pi Pico (`RP2040`):
 | **Clock** | Padrão / `_OC` | Use `_OC` **somente** se a ligação de clock do Mechacon (`GPIO 3`) estiver instalada |
 | **Região (`SCEX`)** | `SCEA` (EUA), `SCEE` (EUR), `SCEI` (JPN), `Generic` | Escolha a região da **BIOS do seu console** (ou `Generic` se não tiver certeza) |
 
-### Estrutura recomendada no cartão microSD
-```text
-SD:/
-├── config.ini              # Configurações do PicoMenu (gerado pelo menu ou PicoManager)
-├── background.raw          # Papel de parede 320x240 8bpp opcional
-├── PicoPlayer/             # Músicas .mp3 / .wav + capas .cov + index.pp (Release 2.0+)
-└── Jogos/
-    └── Meu Jogo/
-        ├── Meu Jogo.cue
-        ├── Meu Jogo.bin
-        ├── Meu Jogo.cov    # Capa 128x128 8bpp opcional
-        ├── Meu Jogo.cht    # Cheats GameShark opcionais
-        └── Meu Jogo.lsd    # Dados LibCrypt PAL opcionais (.sbi/.lsd)
-```
-
----
-
-## Como compilar
-
-### Firmware PicoStation (16 variantes `.uf2`)
-Requer `cmake >= 3.24`, `ninja`, `arm-none-eabi-gcc` e [Raspberry Pi Pico SDK 2.1.1](https://github.com/raspberrypi/pico-sdk):
-```sh
-git submodule update --init --recursive
-./tools/build_release_matrix.sh
-```
-
-### PicoMenu (`picomenu/`)
-Requer `mipsel-none-elf-gcc`, `cmake`, `ninja` e `mkpsxiso`:
-```sh
-cd picomenu
-cmake -B build -G Ninja
-cmake --build build
-cp build/picostation-menu.bin ./picostation-menu.bin
-```
+Para instruções detalhadas de instalação, estrutura do cartão microSD e compilação, consulte a [**Wiki do projeto**](docs/README.md).
 
 ---
 

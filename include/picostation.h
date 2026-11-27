@@ -24,7 +24,11 @@ enum class FileListingStates {
     GET_COVER,
     GET_CFG,
     GET_BG,
-    GET_CHEAT
+    GET_CHEAT,
+    PP_SCAN_SD,
+    PP_MOUNT_SD,
+    PP_EXIT,
+    PP_GET_ART
 };
 
 enum class MenuDataKind {
@@ -33,7 +37,9 @@ enum class MenuDataKind {
     CFG,
     COVER,
     CHEAT,
-    BG
+    BG,
+    PP_META,
+    PP_ART
 };
 
 extern pseudoatomic<FileListingStates> g_fileListingState;

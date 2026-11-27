@@ -94,6 +94,7 @@ target_compile_definitions(
     PICO_DEFAULT_UART_TX_PIN=0
     PICO_DEFAULT_UART_RX_PIN=1
     PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64
+    PICO_MALLOC_PANIC=0
     MAXINDEX=2
 )
 
@@ -141,6 +142,7 @@ target_sources(
     src/i2s.cpp
     src/main.cpp
     src/modchip.cpp
+    src/pico_audio.cpp
     src/picostation.cpp
     src/subq.cpp
     src/directory_listing.cpp
@@ -149,6 +151,42 @@ target_sources(
     third_party/cueparser/fileabstract.c
     third_party/cueparser/scheduler.c
     third_party/posix_file.c
+    third_party/libhelix-mp3/bitstream.c
+    third_party/libhelix-mp3/buffers.c
+    third_party/libhelix-mp3/dct32.c
+    third_party/libhelix-mp3/dequant.c
+    third_party/libhelix-mp3/dqchan.c
+    third_party/libhelix-mp3/huffman.c
+    third_party/libhelix-mp3/hufftabs.c
+    third_party/libhelix-mp3/imdct.c
+    third_party/libhelix-mp3/mp3dec.c
+    third_party/libhelix-mp3/mp3tabs.c
+    third_party/libhelix-mp3/polyphase.c
+    third_party/libhelix-mp3/scalfact.c
+    third_party/libhelix-mp3/stproc.c
+    third_party/libhelix-mp3/subband.c
+    third_party/libhelix-mp3/trigtabs.c
+)
+
+# Optimize libhelix-mp3 for real-time 320 kbps CBR / VBR V0 decoding on RP2040.
+# Compile imdct.c at -O2 (instead of -O3) so it fits compactly in zero-wait-state
+# RP2040 SRAM without bloating to 16 KB and thrashing the XIP flash cache!
+set_source_files_properties(
+    third_party/libhelix-mp3/bitstream.c
+    third_party/libhelix-mp3/dct32.c
+    third_party/libhelix-mp3/dequant.c
+    third_party/libhelix-mp3/dqchan.c
+    third_party/libhelix-mp3/huffman.c
+    third_party/libhelix-mp3/mp3dec.c
+    third_party/libhelix-mp3/polyphase.c
+    third_party/libhelix-mp3/scalfact.c
+    third_party/libhelix-mp3/stproc.c
+    third_party/libhelix-mp3/subband.c
+    PROPERTIES COMPILE_OPTIONS "-O3"
+)
+set_source_files_properties(
+    third_party/libhelix-mp3/imdct.c
+    PROPERTIES COMPILE_OPTIONS "-O2"
 )
 
 target_include_directories(

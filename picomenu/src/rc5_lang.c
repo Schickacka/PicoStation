@@ -2,7 +2,7 @@
 
 // Note: strings use Latin-1 hex escapes so accented characters match rc5FontSprites exactly:
 //   \xe0=à  \xe1=á  \xe2=â  \xe3=ã  \xe7=ç  \xe9=é  \xea=ê  \xed=í  \xf3=ó  \xf4=ô  \xf5=õ  \xfa=ú
-//   \xd6=Ö  \xfc=ü  \x8c=SELECT  \x96=START  \x97=L1  \x98=R1
+//   \xd6=Ö  \xfc=ü  \x8c=SELECT  \x96=START  \x97=L2  \x98=R2
 
 static const MenuStrings s_langEn = {
     .loading         = "Please Wait Loading...",

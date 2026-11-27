@@ -91,9 +91,7 @@ static void parseCheatFile(char *text) {
                 if (s_itemCount >= MAX_CHEATS) break;
                 line[len - 1] = '\0';
                 const char *title = line + 1;
-                bool autoOn = false;
                 if (*title == '*') {
-                    autoOn = true;
                     title++;
                 }
                 CheatItem *it = &s_items[s_itemCount++];
@@ -101,7 +99,7 @@ static void parseCheatFile(char *text) {
                 it->name[sizeof(it->name) - 1] = '\0';
                 it->firstCode = (uint8_t)s_codeCount;
                 it->numCodes  = 0;
-                it->enabled   = autoOn ? 1 : 0;
+                it->enabled   = 1; // Match official RC5: all cheats start enabled by default
             } else if (s_itemCount > 0 && s_codeCount < MAX_CHEAT_CODES && len >= 12) {
                 uint32_t wAddr = parseHexStr(line, 8);
                 const char *valStr = line + 8;
@@ -310,10 +308,10 @@ int rc5CheatsDrawAndUpdate(DMAChain *chain, const TextureInfo *font,
     } else if (pressed & BUTTON_MASK_START) {
         s_items[s_selected].enabled = !s_items[s_selected].enabled;
         sound_playOnChannel(sfxClick, SFX_VOL, SFX_VOL, 0);
-    } else if (pressed & BUTTON_MASK_L1) {
+    } else if (pressed & BUTTON_MASK_L2) {
         for (int i = 0; i < s_itemCount; i++) s_items[i].enabled = 1;
         sound_playOnChannel(sfxClick, SFX_VOL, SFX_VOL, 0);
-    } else if (pressed & BUTTON_MASK_R1) {
+    } else if (pressed & BUTTON_MASK_R2) {
         for (int i = 0; i < s_itemCount; i++) s_items[i].enabled = 0;
         sound_playOnChannel(sfxClick, SFX_VOL, SFX_VOL, 0);
     } else if (pressed & g_cfg.openMask) {

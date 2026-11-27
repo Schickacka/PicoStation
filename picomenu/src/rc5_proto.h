@@ -19,8 +19,16 @@ typedef enum {
     PICO_CMD_EXTENDED          = 0x8,
     PICO_CMD_GET_COVER         = 0x9,
     PICO_CMD_BOOTLOADER        = 0xA,
-    PICO_CMD_GET_CHEAT         = 0xB
+    PICO_CMD_GET_CHEAT         = 0xB,
+    PICO_CMD_PICOPLAYER        = 0xC
 } PicoCommand;
+
+typedef enum {
+    PICO_PP_SCAN_SD      = 0,
+    PICO_PP_MOUNT_SD     = 1,
+    PICO_PP_EXIT         = 2,
+    PICO_PP_GET_ART_MASK = 0x0100
+} PicoPlayerSubCmd;
 
 // Extended subcommand arguments: arg = (ext << 1) | value
 typedef enum {
@@ -32,11 +40,13 @@ typedef enum {
 } PicoExtendedCmd;
 
 // Exact RC5 virtual LBAs (drive sector = 4650 + LBA)
-#define PICO_LBA_LISTING    100 // sector 4750 ("LST1")
-#define PICO_LBA_CFG        150 // sector 4800 ("CFG1" / "DEAD")
-#define PICO_LBA_COVER_BASE 200 // sectors 4850..4857 (8 x 2114 B, "PART" / "DEAD")
-#define PICO_LBA_CHEAT_BASE 250 // sectors 4900..4902 (3 x 2048 B, "CHT1" / "CHT0")
-#define PICO_LBA_BG_BASE    300 // sectors 4950..4983 (34 x 2316 B, "PART" / "DEAD")
+#define PICO_LBA_LISTING      100 // sector 4750 ("LST1")
+#define PICO_LBA_CFG          150 // sector 4800 ("CFG1" / "DEAD")
+#define PICO_LBA_COVER_BASE   200 // sectors 4850..4857 (8 x 2114 B, "PART" / "DEAD")
+#define PICO_LBA_CHEAT_BASE   250 // sectors 4900..4902 (3 x 2048 B, "CHT1" / "CHT0")
+#define PICO_LBA_BG_BASE      300 // sectors 4950..4983 (34 x 2316 B, "PART" / "DEAD")
+#define PICO_LBA_PP_META_BASE 350 // sectors 5000..5009 ("PPA1" SD:/PicoPlayer/ metadata)
+#define PICO_LBA_PP_ART_BASE  360 // sectors 5010..5017 ("PART"/"DEAD" 128x128 8bpp .cov)
 
 static inline void picoSendCommand(uint8_t command, uint16_t argument) {
     while (cdromBusy) {

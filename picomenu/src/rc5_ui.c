@@ -104,16 +104,20 @@ void rc5PrintString(DMAChain *chain, const TextureInfo *font, int x, int y,
         bool rawIcon = (ch >= 0x80 && ch <= 0x98);
 
         if (curX + sp->width <= maxX) {
-            ptr = allocatePacket(chain, 4);
             if (rawIcon) {
+                ptr = allocatePacket(chain, 4);
                 ptr[0] = gp0_rectangle(true, true, true);
+                ptr[1] = gp0_xy(curX, curY);
+                ptr[2] = gp0_uv(font->u + sp->x, font->v + sp->y, font->clut);
+                ptr[3] = gp0_xy(sp->width, sp->height);
             } else {
+                ptr = allocatePacket(chain, 4);
                 ptr[0] = gp0_rgb(g_cfg.text.r, g_cfg.text.g, g_cfg.text.b) |
-                         gp0_rectangle(true, true, false);
+                         gp0_rectangle(true, false, false);
+                ptr[1] = gp0_xy(curX, curY);
+                ptr[2] = gp0_uv(font->u + sp->x, font->v + sp->y, font->clut);
+                ptr[3] = gp0_xy(sp->width, sp->height);
             }
-            ptr[1] = gp0_xy(curX, curY);
-            ptr[2] = gp0_uv(font->u + sp->x, font->v + sp->y, font->clut);
-            ptr[3] = gp0_xy(sp->width, sp->height);
         }
         curX += sp->width;
     }

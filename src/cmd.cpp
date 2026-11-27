@@ -387,6 +387,27 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 					dispatchFileAction(FileListingStates::GET_CHEAT, true);
 					break;
 				}
+
+				case COMMAND_PICOPLAYER:
+				{
+					if (command.custom_cmd.arg == PP_SUBCMD_SCAN_SD)
+					{
+						dispatchFileAction(FileListingStates::PP_SCAN_SD, true);
+					}
+					else if (command.custom_cmd.arg == PP_SUBCMD_MOUNT_SD)
+					{
+						dispatchFileAction(FileListingStates::PP_MOUNT_SD, true);
+					}
+					else if (command.custom_cmd.arg == PP_SUBCMD_EXIT)
+					{
+						dispatchFileAction(FileListingStates::PP_EXIT, true);
+					}
+					else if ((command.custom_cmd.arg & PP_SUBCMD_GET_ART_MASK) != 0)
+					{
+						dispatchFileAction(FileListingStates::PP_GET_ART, true);
+					}
+					break;
+				}
 				
 				case COMMAND_BOOTLOADER:
 				{

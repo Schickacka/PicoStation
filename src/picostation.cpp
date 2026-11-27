@@ -1,4 +1,5 @@
 #include "picostation.h"
+#include "pico_audio.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -564,6 +565,7 @@ void __time_critical_func(picostation::reset)(const uint8_t resetMode)
         {
             tight_loop_contents();
         }
+        g_picoAudio.deactivate();
         g_discImage.unload();
         g_discImage.makeDummyCue();
         g_discImage.set_skip_bootsector(false);

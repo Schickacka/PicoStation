@@ -7,8 +7,8 @@ set(PROJECT_NAME "picostation-menu")
 project(
     ${PROJECT_NAME}
     LANGUAGES    C CXX ASM
-    VERSION      1.1.0
-    DESCRIPTION  "PicoMenu Release 1.1 (RC5 parity + PT-BR + OWMC GameID + SIO0 Rumble Fix)"
+    VERSION      2.0.0
+    DESCRIPTION  "PicoMenu Release 2.0 (PU-20 Skin + PicoPlayer MP3/WAV/CD-DA + SoundScope + PT-BR + OWMC GameID)"
 )
 
 include(ps1-bare-metal/cmake/setup.cmake)
@@ -44,6 +44,8 @@ add_executable(
     src/rc5_ui.c
     src/rc5_cheats.c
     src/rc5_boot.c
+    src/picoplayer/pu20_skin.c
+    src/picoplayer/picoplayer.c
     src/file_manager.c
     src/controller.c
     src/psxproject/cdrom.c
@@ -55,6 +57,10 @@ add_executable(
     src/psxproject/spu.c
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE common)
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${PROJECT_SOURCE_DIR}/src"
+    "${PROJECT_SOURCE_DIR}/src/picoplayer"
+)
 
 # Embed RC5 8bpp Latin-1 13px font, 4bpp logo, cheat engine hook, and SPU VAG SFX
 addBinaryFile(${PROJECT_NAME} rc5FontTexture     "${PROJECT_SOURCE_DIR}/assets/rc5/rc5_font_tex.dat")

@@ -147,12 +147,12 @@ static bool parseKeyNumber(const char *text, const char *key, uint32_t *outVal) 
 }
 
 void rc5ConfigInitDefaults(void) {
-    // Exact RC5 .sdata defaults
-    g_cfg.bg        = (RgbColor){0x00, 0x00, 0x20};
-    g_cfg.frame     = (RgbColor){0xFF, 0xFF, 0xFF};
-    g_cfg.filelist  = (RgbColor){0x00, 0x00, 0x40};
+    // PU-20 BIOS Shell Skin palette (overridable via config.ini)
+    g_cfg.bg        = (RgbColor){0x08, 0x08, 0x28};
+    g_cfg.frame     = (RgbColor){0x31, 0x41, 0xC5};
+    g_cfg.filelist  = (RgbColor){0x22, 0x26, 0x62};
     g_cfg.text      = (RgbColor){0xFF, 0xFF, 0xFF};
-    g_cfg.cursor    = (RgbColor){0x80, 0x00, 0x00};
+    g_cfg.cursor    = (RgbColor){0x4C, 0x5E, 0xF0};
     g_cfg.style     = 0;
     g_cfg.wallpaper = false;
     g_cfg.openMask  = BUTTON_MASK_X;

@@ -4,6 +4,7 @@
 
 #include "cmd.h"
 #include "disc_image.h"
+#include "pico_audio.h"
 #include "drive_mechanics.h"
 #include "hardware/pio.h"
 #include "logging.h"
@@ -164,7 +165,7 @@ void __time_critical_func(picostation::ModChip::sendLicenseString)(const int sec
     // reset hysteresis). Never abort an active 44-bit SCEX string mid-byte;
     // only check gating in IDLE and during the 90 ms INTER_STRING_GAP.
     const bool inWobbleGroove = (sector > 0) && (sector < c_leadIn);
-    const bool isDataDisc = g_discImage.hasData();
+    const bool isDataDisc = !g_picoAudio.isActive() && g_discImage.hasData();
     const bool soctDisabled = !mechCommand.getSoct();
     const bool gfsSet = mechCommand.getSens(SENS::GFS);
     const bool shouldActivateModchip = inWobbleGroove && gfsSet && soctDisabled && isDataDisc;
