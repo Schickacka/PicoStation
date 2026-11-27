@@ -656,6 +656,8 @@ int main(int argc, const char **argv) {
             rc5DrawBox(chain, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false, g_cfg.bg, false);
         }
 
+        waitForDMADone();
+        waitForGP0Ready();
         uint16_t buttons = getButtons(g_cfg.openMask, g_cfg.backMask);
 #ifdef PICO_MOCK_UI
         // Automated D-pad + cover-interruption + Options + Credits stress script

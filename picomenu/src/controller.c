@@ -94,7 +94,7 @@ bool waitForAcknowledge(int timeout) {
  #define DTR_PRE_DELAY   10
  #define DTR_POST_DELAY  10
  #define DTR_PACKET_DELAY 200
- #define DSR_TIMEOUT     150
+ #define DSR_TIMEOUT     400
  
  void selectPort(int port) {
      // Set or clear the bit that controls which set of controller and memory
@@ -219,12 +219,12 @@ bool waitForAcknowledge(int timeout) {
 uint16_t getButtons(uint16_t openMask, uint16_t backMask) {
     static uint16_t s_lastPortButtons[2] = { 0, 0 };
     static uint8_t  s_missCount[2] = { 0, 0 };
-    uint8_t request[4] = { CMD_POLL, 0x00, 0x00, 0x00 };
+    uint8_t request[8] = { CMD_POLL, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     uint8_t response[32];
 
     for (int port = 0; port < 2; port++) {
         if (port == 1) {
-            delayMicroseconds(50);
+            delayMicroseconds(250);
         }
         memset(response, 0, sizeof(response));
         selectPort(port);
