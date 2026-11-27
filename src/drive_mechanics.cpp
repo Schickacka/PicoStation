@@ -16,7 +16,7 @@
 #endif
 
 #define ZONE_CNT 	16
-#define ZONE_MAX 	ZONE_CNT-1
+#define ZONE_MAX 	(ZONE_CNT - 1)
 
 extern picostation::I2S m_i2s;
 uint32_t zone[ZONE_CNT] = 			{4500, 7750, 13500, 27000, 45000, 63000, 85500, 103500, 130500, 153000, 175500, 207000, 234000, 265500, 297000, 999999};

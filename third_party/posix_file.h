@@ -29,6 +29,7 @@ SOFTWARE.
 #include <stdbool.h>
 #include <stdint.h>
 #include "cueparser/fileabstract.h"
+#include "ff.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,7 @@ extern "C" {
 struct CueFile* create_posix_file(struct CueFile*, const char* filename, uint8_t mode);
 struct CueFile* create_posix_file_lazy(struct CueFile*, const char* filename, uint64_t cachedSize);
 bool posix_file_ensure_open(struct CueFile* file);
+FIL* posix_file_get_fil(struct CueFile* file);
 uint64_t posix_file_get_size(const struct CueFile* file);
 void posix_file_ensure_fastseek(struct CueFile* file);
 

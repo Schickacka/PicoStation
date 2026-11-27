@@ -46,6 +46,11 @@ static bool __time_critical_func(matchesListingFilter)(const FILINFO &entry)
     }
     if (entry.fattrib & AM_DIR)
     {
+        // Hide internal firmware update folder from the root PicoMenu listing
+        if (currentDirectory[0] == '\0' && strcasecmp(entry.fname, "UPDATE") == 0)
+        {
+            return false;
+        }
         return true;
     }
     return strcasestr(entry.fname, ".cue") != nullptr;

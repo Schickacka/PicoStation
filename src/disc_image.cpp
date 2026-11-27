@@ -1167,7 +1167,11 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
             break;
         }
 
-        FIL *trackFp = (FIL *)file->opaque;
+        FIL *trackFp = posix_file_get_fil(file);
+        if (!trackFp)
+        {
+            break;
+        }
         if (!trackFp->cltbl &&
             (static_cast<FSIZE_t>(seekBytes) < trackFp->fptr ||
              static_cast<FSIZE_t>(seekBytes) > trackFp->fptr + 262144u))
@@ -1184,12 +1188,12 @@ void __time_critical_func(picostation::DiscImage::readSectorSD)(void *buffer, co
 
         if (skip_edc || locatedType != CueTrackType::TRACK_TYPE_DATA)
         {
-            fr = f_read_scramble((FIL *)file->opaque, buffer, c_cdSamplesBytes, &br,
+            fr = f_read_scramble(trackFp, buffer, c_cdSamplesBytes, &br,
                                  scramling, locatedType == CueTrackType::TRACK_TYPE_DATA);
         }
         else
         {
-            fr = f_read((FIL *)file->opaque, s_userData, c_cdSamplesBytes, &br);
+            fr = f_read(trackFp, s_userData, c_cdSamplesBytes, &br);
 
             if (FR_OK == fr && br == c_cdSamplesBytes)
             {

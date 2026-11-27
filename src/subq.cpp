@@ -54,9 +54,12 @@ void __time_critical_func(picostation::SubQ::start_subq)(const int sector)
     pio_sm_set_enabled(PIOInstance::SUBQ, SM::SUBQ, true);
     
     const uint sub[3] = {
-        (uint)((tracksubq.raw[3] << 24) | (tracksubq.raw[2] << 16) | (tracksubq.raw[1] << 8) | (tracksubq.raw[0])),
-        (uint)((tracksubq.raw[7] << 24) | (tracksubq.raw[6] << 16) | (tracksubq.raw[5] << 8) | (tracksubq.raw[4])),
-        (uint)((tracksubq.raw[11] << 24) | (tracksubq.raw[10] << 16) | (tracksubq.raw[9] << 8) | (tracksubq.raw[8]))};
+        (static_cast<uint32_t>(tracksubq.raw[3]) << 24) | (static_cast<uint32_t>(tracksubq.raw[2]) << 16) |
+            (static_cast<uint32_t>(tracksubq.raw[1]) << 8) | static_cast<uint32_t>(tracksubq.raw[0]),
+        (static_cast<uint32_t>(tracksubq.raw[7]) << 24) | (static_cast<uint32_t>(tracksubq.raw[6]) << 16) |
+            (static_cast<uint32_t>(tracksubq.raw[5]) << 8) | static_cast<uint32_t>(tracksubq.raw[4]),
+        (static_cast<uint32_t>(tracksubq.raw[11]) << 24) | (static_cast<uint32_t>(tracksubq.raw[10]) << 16) |
+            (static_cast<uint32_t>(tracksubq.raw[9]) << 8) | static_cast<uint32_t>(tracksubq.raw[8])};
     pio_sm_put_blocking(PIOInstance::SUBQ, SM::SUBQ, sub[0]);
     pio_sm_put_blocking(PIOInstance::SUBQ, SM::SUBQ, sub[1]);
     pio_sm_put_blocking(PIOInstance::SUBQ, SM::SUBQ, sub[2]);

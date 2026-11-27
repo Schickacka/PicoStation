@@ -31,9 +31,11 @@ SOFTWARE.
 #include <stdlib.h>
 #include <string.h>
 
-// FIL MUST remain the first member so (FIL *)file->opaque stays valid everywhere!
+// Pinned files (Track 1 data + .cue) own a heap-allocated FIL; lazy CDDA tracks
+// (Tracks 2..99, e.g. 57-track Tomb Raider) share a single static s_lazyFil so
+// each lazy track uses only 24 bytes of heap instead of 584 bytes!
 typedef struct PosixFil {
-    FIL fp;
+    FIL *fp;              // Points to owned FIL (if pinned) or &s_lazyFil (if open lazy)
     uint8_t clmtTried;
     uint8_t isOpen;
     uint8_t pinned;       // Track 1 (data) & .cue stay pinned open permanently
@@ -44,9 +46,11 @@ typedef struct PosixFil {
 // Bounded lazy audio handle cache: keep at most 1 non-pinned track open at a time
 // so 57..99-track CDDA games (e.g. Tomb Raider) mount in ~15 ms with tiny RAM use!
 static PosixFil *s_activeLazyFile = NULL;
+static FIL s_lazyFil;
 
 static void synthesize_exfat_clmt(PosixFil *pf) {
-    FIL *fp = &pf->fp;
+    FIL *fp = pf->fp;
+    if (!fp) return;
     fp->cltbl = NULL;
 #if FF_FS_EXFAT
     if (fp->obj.objsize > 65536u && fp->obj.sclust != 0 &&
@@ -81,13 +85,20 @@ static void close_fil_handle(PosixFil *pf) {
     {
         return;
     }
-    FIL *fp = &pf->fp;
-    if (fp->cltbl)
+    FIL *fp = pf->fp;
+    if (fp)
     {
-        free(fp->cltbl);
-        fp->cltbl = NULL;
+        if (fp->cltbl)
+        {
+            free(fp->cltbl);
+            fp->cltbl = NULL;
+        }
+        f_close(fp);
     }
-    f_close(fp);
+    if (!pf->pinned)
+    {
+        pf->fp = NULL;
+    }
     pf->isOpen = 0;
     pf->clmtTried = 0;
 }
@@ -108,6 +119,11 @@ static void posix_close(struct CueFile *file, struct CueScheduler *scheduler, vo
     }
 
     close_fil_handle(pf);
+    if (pf->pinned && pf->fp)
+    {
+        free(pf->fp);
+        pf->fp = NULL;
+    }
     if (pf->path)
     {
         free(pf->path);
@@ -128,7 +144,16 @@ uint64_t posix_file_get_size(const struct CueFile *file) {
         return 0;
     }
     const PosixFil *pf = (const PosixFil *)file->opaque;
-    return pf->isOpen ? (uint64_t)f_size(&pf->fp) : pf->cachedSize;
+    return (pf->isOpen && pf->fp) ? (uint64_t)f_size(pf->fp) : pf->cachedSize;
+}
+
+FIL *posix_file_get_fil(struct CueFile *file) {
+    if (!file || !file->opaque)
+    {
+        return NULL;
+    }
+    PosixFil *pf = (PosixFil *)file->opaque;
+    return pf->isOpen ? pf->fp : NULL;
 }
 
 bool posix_file_ensure_open(struct CueFile *file) {
@@ -138,7 +163,7 @@ bool posix_file_ensure_open(struct CueFile *file) {
     }
 
     PosixFil *pf = (PosixFil *)file->opaque;
-    if (pf->isOpen)
+    if (pf->isOpen && pf->fp)
     {
         return true;
     }
@@ -154,15 +179,21 @@ bool posix_file_ensure_open(struct CueFile *file) {
         s_activeLazyFile = NULL;
     }
 
-    memset(&pf->fp, 0, sizeof(pf->fp));
+    FIL *fp = pf->pinned ? pf->fp : &s_lazyFil;
+    if (!fp)
+    {
+        return false;
+    }
+    memset(fp, 0, sizeof(FIL));
     pf->clmtTried = 0;
-    if (f_open(&pf->fp, pf->path, FA_READ) != FR_OK)
+    if (f_open(fp, pf->path, FA_READ) != FR_OK)
     {
         return false;
     }
 
+    pf->fp = fp;
     pf->isOpen = 1;
-    pf->cachedSize = (uint64_t)f_size(&pf->fp);
+    pf->cachedSize = (uint64_t)f_size(fp);
     synthesize_exfat_clmt(pf);
     if (!pf->pinned)
     {
@@ -187,7 +218,12 @@ static void posix_read(struct CueFile *file, struct CueScheduler *scheduler, uin
         return;
     }
 
-    FIL *f = (FIL *)file->opaque;
+    FIL *f = posix_file_get_fil(file);
+    if (!f)
+    {
+        File_schedule_read(file, scheduler, 1, 0, buffer, cb);
+        return;
+    }
     size_t r = 0;
     f_lseek(f, cursor);
     int ret = f_read(f, buffer, amount, &r);
@@ -204,7 +240,12 @@ static void posix_write(struct CueFile *file, struct CueScheduler *scheduler, ui
         File_schedule_write(file, scheduler, 1, 0, cb);
         return;
     }
-    FIL *f = (FIL *)file->opaque;
+    FIL *f = posix_file_get_fil(file);
+    if (!f)
+    {
+        File_schedule_write(file, scheduler, 1, 0, cb);
+        return;
+    }
     size_t r = 0;
     f_lseek(f, cursor);
     int ret = f_write(f, buffer, amount, &r);
@@ -227,11 +268,11 @@ void posix_file_ensure_fastseek(struct CueFile *file) {
     }
 
     PosixFil *pf = (PosixFil *)file->opaque;
-    if (!pf->isOpen)
+    if (!pf->isOpen || !pf->fp)
     {
         return;
     }
-    FIL *fp = &pf->fp;
+    FIL *fp = pf->fp;
     if (fp->cltbl || pf->clmtTried || fp->obj.objsize <= 65536u || fp->obj.sclust == 0)
     {
         return;
@@ -320,14 +361,22 @@ struct CueFile *create_posix_file(struct CueFile *file, const char *filename, ui
         return NULL;
     }
     memset(pf, 0, sizeof(PosixFil));
-    FIL *fp = &pf->fp;
-
-    if (f_open(fp, filename, mode) != FR_OK)
+    FIL *fp = (FIL *)malloc(sizeof(FIL));
+    if (!fp)
     {
         free(pf);
         return NULL;
     }
+    memset(fp, 0, sizeof(FIL));
 
+    if (f_open(fp, filename, mode) != FR_OK)
+    {
+        free(fp);
+        free(pf);
+        return NULL;
+    }
+
+    pf->fp = fp;
     pf->isOpen = 1;
     pf->pinned = 1;
     pf->cachedSize = (uint64_t)f_size(fp);
