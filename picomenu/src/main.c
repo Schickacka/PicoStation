@@ -33,8 +33,8 @@
 #define MAX_FILES     4096
 #define SFX_VOL       10922
 
-#define PICOSTATION_RELEASE_STR "Release 1.1"
-#define PICOMENU_RELEASE_STR    "Release 1.1"
+#define PICOSTATION_RELEASE_STR "Release 1.2"
+#define PICOMENU_RELEASE_STR    "Release 1.2"
 
 #define COVER_PART_BYTES 2114
 #define COVER_PARTS      8
@@ -431,8 +431,8 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
         s_holdRepeat = 0;
     }
 
-    // SELECT toggles credits screen
-    if (pressed & BUTTON_MASK_SELECT) {
+    // SELECT toggles credits screen (root directory only, or to close)
+    if ((pressed & BUTTON_MASK_SELECT) && (s_dirDepth == 0 || s_creditsOpen)) {
         s_creditsOpen = !s_creditsOpen;
     }
 
@@ -565,15 +565,15 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
     if (s_overlay == OVERLAY_NONE) {
         char footer[128];
         if (fileCount > 0 && s_dirDepth > 0) {
-            snprintf(footer, sizeof(footer), "%c %s\t\t\x8c %s\t\t %c %s",
-                     (char)g_cfg.openGlyph, g_lang->open, g_lang->credits,
+            snprintf(footer, sizeof(footer), "%c %s\t\t\t\t %c %s",
+                     (char)g_cfg.openGlyph, g_lang->open,
                      (char)g_cfg.backGlyph, g_lang->back);
         } else if (fileCount > 0) {
             snprintf(footer, sizeof(footer), "%c %s\t\t\x8c %s",
                      (char)g_cfg.openGlyph, g_lang->open, g_lang->credits);
         } else if (s_dirDepth > 0) {
-            snprintf(footer, sizeof(footer), "\t\t\x8c %s\t\t %c %s",
-                     g_lang->credits, (char)g_cfg.backGlyph, g_lang->back);
+            snprintf(footer, sizeof(footer), "\t\t\t\t %c %s",
+                     (char)g_cfg.backGlyph, g_lang->back);
         } else {
             snprintf(footer, sizeof(footer), "\t\t\x8c %s", g_lang->credits);
         }
