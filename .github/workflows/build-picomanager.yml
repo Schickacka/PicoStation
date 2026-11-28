@@ -15,16 +15,19 @@ jobs:
         include:
           - os: ubuntu-latest
             name: PicoManager-Linux-x86_64
-            ext: ""
+            mode: onefile
             sep: ":"
+            artifact_path: picomanager/dist/PicoManager
           - os: windows-latest
             name: PicoManager-Windows-x64
-            ext: ".exe"
+            mode: onedir
             sep: ";"
+            artifact_path: picomanager/dist/PicoManager-Windows-x64.zip
           - os: macos-15
             name: PicoManager-macOS-arm64
-            ext: ""
+            mode: onefile
             sep: ":"
+            artifact_path: picomanager/dist/PicoManager
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,7 +44,16 @@ jobs:
       - name: Install Python deps
         run: pip install -r picomanager/requirements.txt
 
-      - name: Build single-file executable
+      - name: Build Windows portable folder (.zip)
+        if: runner.os == 'Windows'
+        working-directory: picomanager
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --icon=assets/icon.ico --version-file=version_info.txt --add-data "assets/icon.png;assets" --add-data "assets/icon.ico;assets" --name PicoManager app.py
+          Compress-Archive -Path dist/PicoManager -DestinationPath dist/PicoManager-Windows-x64.zip -Force
+
+      - name: Build single-file executable (Linux/macOS)
+        if: runner.os != 'Windows'
         working-directory: picomanager
         run: pyinstaller --noconfirm --clean --onefile --windowed --icon=assets/icon.ico --add-data "assets/icon.png${{ matrix.sep }}assets" --add-data "assets/icon.ico${{ matrix.sep }}assets" --name PicoManager app.py
 
@@ -49,4 +61,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: picomanager/dist/PicoManager${{ matrix.ext }}
+          path: ${{ matrix.artifact_path }}

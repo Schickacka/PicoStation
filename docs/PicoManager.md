@@ -12,7 +12,7 @@ Baixe o executável pronto para o seu sistema na aba [**Releases**](https://gith
 
 | Sistema | Executável | Observações |
 |---|---|---|
-| **Windows (64-bit)** | `PicoManager.exe` | Executável único (não requer instalação). |
+| **Windows (64-bit)** | `PicoManager-Windows-x64.zip` | Extraia o `.zip` e execute `PicoManager.exe` (formato `--onedir` portátil, sem auto-extração em `%TEMP%` para evitar falsos positivos no Windows Defender). |
 | **Linux (x86_64)** | `PicoManager` | Dê permissão de execução: `chmod +x PicoManager && ./PicoManager`. |
 | **macOS (Apple Silicon)** | `PicoManager-macOS-arm64` | Dê permissão e execute no Terminal (`chmod +x PicoManager-macOS-arm64`); se o Gatekeeper avisar, permita em *Ajustes do Sistema → Privacidade e Segurança*. |
 
