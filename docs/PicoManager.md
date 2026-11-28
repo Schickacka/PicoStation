@@ -16,7 +16,7 @@ Baixe o executável pronto para o seu sistema na aba [**Releases**](https://gith
 | **Linux (x86_64)** | `PicoManager` | Dê permissão de execução: `chmod +x PicoManager && ./PicoManager`. |
 | **macOS (Apple Silicon)** | `PicoManager-macOS-arm64` | Dê permissão e execute no Terminal (`chmod +x PicoManager-macOS-arm64`); se o Gatekeeper avisar, permita em *Ajustes do Sistema → Privacidade e Segurança*. |
 
-> **Requisito para conversão de áudio:** tenha o [**FFmpeg**](https://ffmpeg.org/) instalado no `PATH` do sistema (no Linux: `sudo apt install ffmpeg`; no macOS: `brew install ffmpeg`; no Windows: `winget install Gyan.FFmpeg`). Sem o FFmpeg, todas as funções de jogos, capas `.cov`, `config.ini`, papel de parede e geração de `index.pp` continuam funcionando normalmente.
+> **Requisito para conversão de áudio (FFmpeg):** coloque a pasta `ffmpeg` (contendo `ffmpeg` e `ffprobe`, ou a subpasta `bin/` extraída do pacote oficial) **dentro da pasta do executável do PicoManager** (`PicoManager/ffmpeg/`), **ou** instale o [**FFmpeg oficial**](https://ffmpeg.org/download.html) no `PATH` do sistema (`sudo apt install ffmpeg` no Linux, `brew install ffmpeg` no macOS, `winget install Gyan.FFmpeg` no Windows). Se o FFmpeg não for encontrado ao abrir, o PicoManager exibe um aviso com o link oficial e o caminho exato da pasta. Todas as demais funções (jogos, capas `.cov`, `config.ini`, papel de parede e `index.pp`) funcionam normalmente sem FFmpeg.
 
 ---
 

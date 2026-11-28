@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +22,7 @@ except ImportError:
 from core import (
     AUDIO_EXTS,
     BUTTON_OPTIONS,
+    FFMPEG_DOWNLOAD_URL,
     LANGUAGES,
     PU20_PRESET,
     RC5_CLASSIC_PRESET,
@@ -32,6 +34,8 @@ from core import (
     convert_image_to_wallpaper,
     decode_cov_to_ppm,
     detect_default_db_dir,
+    find_ffmpeg,
+    get_app_dir,
     list_sd_games,
     list_storage_drives,
     load_config_ini,
@@ -206,6 +210,88 @@ class PicoManagerApp(tk.Tk):
         self._build_ui()
         self._refresh_drives()
         self._refresh_config_ui()
+        self.after(250, self._check_ffmpeg_on_startup)
+
+    def _check_ffmpeg_on_startup(self) -> None:
+        if find_ffmpeg():
+            return
+        self._show_ffmpeg_missing_dialog()
+
+    def _show_ffmpeg_missing_dialog(self) -> None:
+        ffmpeg_dir = get_app_dir() / "ffmpeg"
+        dlg = tk.Toplevel(self)
+        dlg.title("FFmpeg não encontrado" if self.app_lang == "pt" else "FFmpeg not found")
+        dlg.configure(bg=BG_PANEL)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = tk.Frame(dlg, bg=BG_PANEL, padx=20, pady=18)
+        frame.pack(fill="both", expand=True)
+
+        if self.app_lang == "pt":
+            heading = "FFmpeg não encontrado"
+            body = (
+                "O FFmpeg é necessário para converter músicas para o PicoPlayer.\n"
+                "(As funções de jogos, capas .cov, config.ini e índice index.pp continuam funcionando normalmente.)\n\n"
+                "Para ativar a conversão de áudio, baixe o FFmpeg oficial e coloque os arquivos\n"
+                "ffmpeg e ffprobe dentro da pasta abaixo (ou instale no PATH do sistema):"
+            )
+            btn_dl = "Baixar FFmpeg (Site Oficial)"
+            btn_ok = "Continuar"
+        else:
+            heading = "FFmpeg not found"
+            body = (
+                "FFmpeg is required to convert music for PicoPlayer.\n"
+                "(Games, .cov covers, config.ini, and index.pp TOC still work normally.)\n\n"
+                "To enable audio conversion, download official FFmpeg and place\n"
+                "ffmpeg and ffprobe inside the folder below (or install to system PATH):"
+            )
+            btn_dl = "Download FFmpeg (Official Site)"
+            btn_ok = "Continue"
+
+        tk.Label(
+            frame, text=heading, bg=BG_PANEL, fg="#FFD56B",
+            font=("DejaVu Sans", 12, "bold"), anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            frame, text=body, bg=BG_PANEL, fg=FG_MAIN,
+            font=("DejaVu Sans", 9), justify="left", anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        path_box = tk.Entry(
+            frame, bg=BG_CARD, fg="#8BE9FD", relief="flat",
+            font=("DejaVu Sans Mono", 9), readonlybackground=BG_CARD,
+        )
+        path_box.insert(0, str(ffmpeg_dir))
+        path_box.configure(state="readonly")
+        path_box.pack(fill="x", ipady=5, pady=(0, 10))
+
+        link_lbl = tk.Label(
+            frame, text=FFMPEG_DOWNLOAD_URL, bg=BG_PANEL, fg="#6FB1FF",
+            font=("DejaVu Sans", 9, "underline"), cursor="hand2", anchor="w",
+        )
+        link_lbl.pack(fill="x", pady=(0, 14))
+        link_lbl.bind("<Button-1>", lambda _e: webbrowser.open(FFMPEG_DOWNLOAD_URL))
+
+        btns = tk.Frame(frame, bg=BG_PANEL)
+        btns.pack(fill="x")
+        tk.Button(
+            btns, text=btn_dl, bg=ACCENT, fg="#FFFFFF", relief="flat",
+            font=("DejaVu Sans", 9, "bold"), padx=12, pady=6, cursor="hand2",
+            command=lambda: webbrowser.open(FFMPEG_DOWNLOAD_URL),
+        ).pack(side="left")
+        tk.Button(
+            btns, text=btn_ok, bg=BG_CARD, fg=FG_MAIN, relief="flat",
+            font=("DejaVu Sans", 9), padx=14, pady=6, cursor="hand2",
+            command=dlg.destroy,
+        ).pack(side="right")
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - dlg.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - dlg.winfo_height()) // 2)
+        dlg.geometry(f"+{x}+{y}")
 
     def _set_window_icon(self) -> None:
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))

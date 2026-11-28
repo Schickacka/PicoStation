@@ -35,6 +35,57 @@ except ImportError:
     Image = None  # type: ignore
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".opus", ".aac", ".wma", ".aiff", ".aif"}
+FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
+
+
+def get_app_dir() -> Path:
+    """Returns the folder containing the PicoManager executable (or core.py when running from source)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _subprocess_kwargs() -> Dict[str, object]:
+    """Prevents console window flashes when spawning ffmpeg/ffprobe on Windows."""
+    if sys.platform.startswith("win"):
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    return {}
+
+
+def _find_media_tool(tool_name: str) -> Optional[str]:
+    """
+    Locates ffmpeg / ffprobe in priority order:
+      1) <PicoManager dir>/ffmpeg/<tool>[.exe]
+      2) <PicoManager dir>/ffmpeg/bin/<tool>[.exe]
+      3) <PicoManager dir>/<tool>[.exe]
+      4) <cwd>/ffmpeg/[bin/]<tool>[.exe]
+      5) System PATH via shutil.which()
+    """
+    exe_name = f"{tool_name}.exe" if sys.platform.startswith("win") else tool_name
+    app_dir = get_app_dir()
+    cwd = Path.cwd()
+    candidates = [
+        app_dir / "ffmpeg" / exe_name,
+        app_dir / "ffmpeg" / "bin" / exe_name,
+        app_dir / exe_name,
+        cwd / "ffmpeg" / exe_name,
+        cwd / "ffmpeg" / "bin" / exe_name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return shutil.which(tool_name)
+
+
+def find_ffmpeg() -> Optional[str]:
+    return _find_media_tool("ffmpeg")
+
+
+def find_ffprobe() -> Optional[str]:
+    return _find_media_tool("ffprobe")
 
 # Languages matching picomenu/src/rc5_lang.c
 LANGUAGES: List[Tuple[int, str]] = [
@@ -591,12 +642,13 @@ def _sanitize_latin1(text: str) -> str:
 
 def probe_audio_tags(src_path: Path) -> Dict[str, str]:
     tags = {"title": "", "artist": "", "album": ""}
-    if not shutil.which("ffprobe"):
+    ffprobe_bin = find_ffprobe()
+    if not ffprobe_bin:
         return tags
     try:
         res = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(src_path)],
-            capture_output=True, text=True, timeout=10, check=False,
+            [ffprobe_bin, "-v", "quiet", "-print_format", "json", "-show_format", str(src_path)],
+            capture_output=True, text=True, timeout=10, check=False, **_subprocess_kwargs(),
         )
         if res.returncode == 0 and res.stdout:
             data = json.loads(res.stdout)
@@ -693,15 +745,17 @@ def _export_album_art_cov(
             tmp_dir = Path(tmpdir)
             emb_img = tmp_dir / "embedded.png"
             # 1) Try embedded art (APIC / attached_pic)
-            res = subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", str(src_file),
-                 "-an", "-vframes", "1", str(emb_img)],
-                capture_output=True, text=True, timeout=10, check=False,
-            )
-            if res.returncode == 0 and emb_img.is_file() and emb_img.stat().st_size > 0:
-                convert_image_to_cov(emb_img, dst_cov)
-                log(f"  [CAPA] Embutida -> {dst_cov.name}")
-                return True
+            ffmpeg_bin = find_ffmpeg()
+            if ffmpeg_bin:
+                res = subprocess.run(
+                    [ffmpeg_bin, "-y", "-v", "error", "-i", str(src_file),
+                     "-an", "-vframes", "1", str(emb_img)],
+                    capture_output=True, text=True, timeout=10, check=False, **_subprocess_kwargs(),
+                )
+                if res.returncode == 0 and emb_img.is_file() and emb_img.stat().st_size > 0:
+                    convert_image_to_cov(emb_img, dst_cov)
+                    log(f"  [CAPA] Embutida -> {dst_cov.name}")
+                    return True
 
             # 2) Fallback: online iTunes artwork (if enabled)
             if auto_tag_online:
@@ -723,33 +777,37 @@ def _export_album_art_cov(
     return False
 
 
-_SOXR_AVAILABLE: Optional[bool] = None
+_SOXR_CACHE: Tuple[Optional[str], Optional[bool]] = (None, None)
 
 
-def _has_ffmpeg_soxr() -> bool:
-    """Returns True if the installed ffmpeg binary supports libsoxr resampling."""
-    global _SOXR_AVAILABLE
-    if _SOXR_AVAILABLE is None:
+def _has_ffmpeg_soxr(ffmpeg_bin: Optional[str] = None) -> bool:
+    """Returns True if the resolved ffmpeg binary supports libsoxr resampling."""
+    global _SOXR_CACHE
+    bin_path = ffmpeg_bin or find_ffmpeg()
+    if not bin_path:
+        return False
+    if _SOXR_CACHE[0] != bin_path or _SOXR_CACHE[1] is None:
         try:
             res = subprocess.run(
-                ["ffmpeg", "-v", "quiet", "-buildconf"],
-                capture_output=True, text=True, timeout=5, check=False,
+                [bin_path, "-v", "quiet", "-buildconf"],
+                capture_output=True, text=True, timeout=5, check=False, **_subprocess_kwargs(),
             )
-            _SOXR_AVAILABLE = ("--enable-libsoxr" in (res.stdout or ""))
+            _SOXR_CACHE = (bin_path, "--enable-libsoxr" in (res.stdout or ""))
         except Exception:
-            _SOXR_AVAILABLE = False
-    return _SOXR_AVAILABLE
+            _SOXR_CACHE = (bin_path, False)
+    return bool(_SOXR_CACHE[1])
 
 
 def _probe_source_sample_rate(src_file: Path) -> Optional[int]:
     """Returns source audio sample rate in Hz via ffprobe, or None if unavailable."""
-    if not shutil.which("ffprobe"):
+    ffprobe_bin = find_ffprobe()
+    if not ffprobe_bin:
         return None
     try:
         res = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-select_streams", "a:0",
+            [ffprobe_bin, "-v", "quiet", "-select_streams", "a:0",
              "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(src_file)],
-            capture_output=True, text=True, timeout=8, check=False,
+            capture_output=True, text=True, timeout=8, check=False, **_subprocess_kwargs(),
         )
         val = (res.stdout or "").strip().splitlines()
         if res.returncode == 0 and val:
@@ -771,8 +829,12 @@ def convert_audio_for_picoplayer(
     Also extracts embedded album art (or fetches online artwork) to <Track>.cov (128x128 8bpp).
     Profiles: 'mp3_v0' (default, LAME VBR -V 0 -q 0), 'mp3_320' (LAME 320k CBR -q 0), 'wav_cd'
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg não encontrado no PATH. Instale o ffmpeg primeiro.")
+    ffmpeg_bin = find_ffmpeg()
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            f"FFmpeg não encontrado em '{get_app_dir() / 'ffmpeg'}' nem no PATH. "
+            f"Baixe em {FFMPEG_DOWNLOAD_URL}"
+        )
 
     out_dir = sd_root / "PicoPlayer"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -795,12 +857,12 @@ def convert_audio_for_picoplayer(
     is_wav = (profile == "wav_cd")
     dst_file = out_dir / (f"{safe_stem}.wav" if is_wav else f"{safe_stem}.mp3")
 
-    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(src_file), "-vn", "-ac", "2"]
+    cmd = [ffmpeg_bin, "-y", "-v", "error", "-i", str(src_file), "-vn", "-ac", "2"]
 
     # Preserve bit-exact 44.1 kHz PCM when source is already 44.1 kHz; otherwise use SoXR (precision=28)
     src_sr = _probe_source_sample_rate(src_file)
     if src_sr != 44100:
-        if _has_ffmpeg_soxr():
+        if _has_ffmpeg_soxr(ffmpeg_bin):
             cmd += ["-af", "aresample=44100:resampler=soxr:precision=28"]
         else:
             cmd += ["-ar", "44100"]
@@ -820,7 +882,7 @@ def convert_audio_for_picoplayer(
             cmd += ["-metadata", f"album={tags['album']}"]
     cmd.append(str(dst_file))
 
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, **_subprocess_kwargs())
     if res.returncode != 0:
         raise RuntimeError(f"ffmpeg falhou em {src_file.name}: {res.stderr.strip()}")
 
@@ -870,12 +932,13 @@ def _ffprobe_audio_info(path: Path) -> Tuple[Optional[float], Dict[str, str]]:
     """Returns (duration_seconds, {title, artist, album}) via ffprobe if available."""
     tags = {"title": "", "artist": "", "album": ""}
     dur: Optional[float] = None
-    if not shutil.which("ffprobe"):
+    ffprobe_bin = find_ffprobe()
+    if not ffprobe_bin:
         return dur, tags
     try:
         res = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
-            capture_output=True, text=True, timeout=10, check=False,
+            [ffprobe_bin, "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
+            capture_output=True, text=True, timeout=10, check=False, **_subprocess_kwargs(),
         )
         if res.returncode == 0 and res.stdout:
             fmt = json.loads(res.stdout).get("format", {}) or {}
