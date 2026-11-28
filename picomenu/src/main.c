@@ -35,8 +35,9 @@
 #define MAX_FILES     4096
 #define SFX_VOL       10922
 
-#define PICOSTATION_RELEASE_STR "Release 2.0"
-#define PICOMENU_RELEASE_STR    "Release 2.0"
+#define PICOSTATION_RELEASE_STR "Release 2.1"
+#define PICOMENU_RELEASE_STR    "Release 2.1"
+#define PICOPLAYER_RELEASE_STR  "Release 1.1"
 
 #define COVER_PART_BYTES 2114
 #define COVER_PARTS      8
@@ -138,7 +139,7 @@ static uint16_t loadDirectoryListing(uint8_t cmd, uint16_t arg) {
     int missRetries = 0;
     int int5Errors = 0;
 
-    while (hasNext && missRetries < 200) {
+    while (hasNext && missRetries < 40) {
         if (needSend) {
             picoSendCommand(cmd, arg);
             needSend = false;
@@ -452,11 +453,11 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
             *outAction = MENU_ACTION_BOOTLOADER;
         }
         int tx = boxX + 8;
-        int ty = boxY + 10;
-        char header[96];
+        int ty = boxY + 8;
+        char header[128];
         snprintf(header, sizeof(header),
-                 "PicoStation (%s)\nPicoMenu (%s)\n\nPor: Schickacka",
-                 PICOSTATION_RELEASE_STR, PICOMENU_RELEASE_STR);
+                 "PicoStation (%s)\nPicoMenu (%s)\nPicoPlayer (%s)\n\nPor: Schickacka",
+                 PICOSTATION_RELEASE_STR, PICOMENU_RELEASE_STR, PICOPLAYER_RELEASE_STR);
         rc5PrintString(chain, &s_fontTex, tx, ty, header, maxTextX);
 
         char thanks[192];
@@ -491,8 +492,10 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
             }
             if (pressed & g_cfg.openMask) {
                 fileData *fd = file_manager_get_file_data(*selectedIdx);
-                *outAction = (fd->flag == 0) ? MENU_ACTION_OPEN_OPTIONS : MENU_ACTION_GOTO_DIRECTORY;
-                sound_playOnChannel(&s_sfxSlide, SFX_VOL, SFX_VOL, 1);
+                if (strcmp(fd->filename, "No SD Card") != 0) {
+                    *outAction = (fd->flag == 0) ? MENU_ACTION_OPEN_OPTIONS : MENU_ACTION_GOTO_DIRECTORY;
+                    sound_playOnChannel(&s_sfxSlide, SFX_VOL, SFX_VOL, 1);
+                }
             }
         }
         if ((pressed & g_cfg.backMask) && s_dirDepth > 0) {
@@ -537,8 +540,9 @@ static void drawMainScreen(DMAChain *chain, uint16_t buttons, uint16_t prevButto
             uint16_t idx = (uint16_t)(start + i);
             fileData *fd = file_manager_get_file_data(idx);
             char icon = (fd->flag == 0) ? (char)0x8F : (char)0x92;
+            const char *dispName = (strcmp(fd->filename, "No SD Card") == 0) ? g_lang->noSdCard : fd->filename;
             char line[300];
-            snprintf(line, sizeof(line), "%c %s", icon, fd->filename);
+            snprintf(line, sizeof(line), "%c %s", icon, dispName);
 
             int rowY = boxY + i * 13;
             if (idx == *selectedIdx) {
@@ -705,7 +709,23 @@ int main(int argc, const char **argv) {
                 if (g_cfg.wallpaper) {
                     rc5WallpaperLoad();
                 }
-                fileCount     = loadDirectoryListing(PICO_CMD_GOTO_ROOT, 0);
+                fileCount = 0;
+                for (int retry = 0; retry < 3 && fileCount == 0; retry++) {
+                    if (retry > 0) {
+                        uint8_t session = 1;
+                        initCDROM();
+                        issueCDROMCommand(CDROM_CMD_INIT, NULL, 0);
+                        waitForINT3();
+                        waitForINT2();
+                        issueCDROMCommand(CDROM_CMD_SETSESSION, &session, sizeof(session));
+                        waitForINT3();
+                        for (int w = 0; w < 20000 && waitingForInt2 && waitingForInt5; w++) {
+                            delayMicroseconds(100);
+                        }
+                        delayMicroseconds(50000);
+                    }
+                    fileCount = loadDirectoryListing(PICO_CMD_GOTO_ROOT, 0);
+                }
                 selectedIdx   = 0;
                 s_dirDepth    = 0;
                 s_playerOpen  = false;

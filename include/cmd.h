@@ -107,10 +107,11 @@ class MechCommand {
 
 	enum PICOPLAYER_SUBCMD
 	{
-		PP_SUBCMD_SCAN_SD   = 0,
-		PP_SUBCMD_MOUNT_SD  = 1,
-		PP_SUBCMD_EXIT      = 2,
-		PP_SUBCMD_GET_ART_MASK = 0x0100 // arg = 0x0100 | trackIdx (0..98)
+		PP_SUBCMD_SCAN_SD          = 0,
+		PP_SUBCMD_MOUNT_SD         = 1,
+		PP_SUBCMD_EXIT             = 2,
+		PP_SUBCMD_GET_ART_MASK     = 0x0100, // arg = 0x0100 | trackIdx (0..98)
+		PP_SUBCMD_SELECT_TRACK_MASK = 0x0200 // arg = 0x0200 | trackIdx (0..98)
 	};
 
 	enum EXTENDED_CMD
@@ -119,7 +120,8 @@ class MechCommand {
 		EXTENDED_SKIP_EDC = 2,
 		EXTENDED_GET_CFG = 3,
 		EXTENDED_GET_BG = 4,
-		EXTENDED_OVERCLOCK = 5
+		EXTENDED_OVERCLOCK = 5,
+		EXTENDED_HARD_RESET = 6
 	};
 
 	typedef union mech_cmd_t

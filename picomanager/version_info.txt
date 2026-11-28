@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 0, 0, 0),
-    prodvers=(2, 0, 0, 0),
+    filevers=(2, 1, 0, 0),
+    prodvers=(2, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'PicoStation'),
           StringStruct('FileDescription', 'PicoManager - PicoStation SD Card & Audio Manager'),
-          StringStruct('FileVersion', '2.0.0.0'),
+          StringStruct('FileVersion', '2.1.0.0'),
           StringStruct('InternalName', 'PicoManager'),
           StringStruct('LegalCopyright', 'Apache License 2.0 - PicoStation'),
           StringStruct('OriginalFilename', 'PicoManager.exe'),
           StringStruct('ProductName', 'PicoManager'),
-          StringStruct('ProductVersion', '2.0.0.0')
+          StringStruct('ProductVersion', '2.1.0.0')
         ]
       )
     ]),

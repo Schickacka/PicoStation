@@ -114,6 +114,9 @@ static struct {
     bool     programmed[PP_MAX_TRACKS + 1];
     uint8_t  programOrder[PP_MAX_TRACKS + 1];
     uint8_t  programCount;
+    uint8_t  shuffleDeck[PP_MAX_TRACKS];
+    uint8_t  shuffleCount;
+    uint8_t  shufflePos;
 
     bool     playing;
     bool     paused;
@@ -163,6 +166,7 @@ static struct {
 static uint8_t s_captureBuf[1024] __attribute__((aligned(4)));
 static uint8_t s_probeBuf[2048] __attribute__((aligned(4)));
 static PpTrackMeta s_catalog[PP_MAX_TRACKS];
+static bool s_ppSdMounted = false;
 
 /* Album art cache in PS1 RAM (preloaded during SD scan before audio mount so
  * track switching never interrupts CD-DA / I2S playback). Deduplicates identical
@@ -298,12 +302,12 @@ static uint32_t ppTrackLength(uint8_t track) {
 
 static uint32_t ppDiscRemaining(void) {
     if (!ppAudioReady()) return 0;
-    uint32_t end = s_pp.discEndFrame;
-    if (end == 0) {
-        end = s_pp.startFrame[s_pp.lastTrack] + s_pp.lengthFrame[s_pp.lastTrack];
+    uint32_t curLen = s_pp.lengthFrame[s_pp.curTrack];
+    uint32_t rem = (curLen > s_pp.posFrame) ? (curLen - s_pp.posFrame) : 0u;
+    for (int t = (int) s_pp.curTrack + 1; t <= (int) s_pp.lastTrack; t++) {
+        if (!s_pp.dataTrack[t]) rem += s_pp.lengthFrame[t];
     }
-    uint32_t cur = s_pp.startFrame[s_pp.curTrack] + s_pp.posFrame;
-    return (end > cur) ? (end - cur) : 0;
+    return rem;
 }
 
 static void ppCopyStr(char *dst, size_t dstSize, const char *src) {
@@ -407,7 +411,13 @@ static void ppSetSelection(uint8_t track) {
 /* ------------------------------------------------------------------------- */
 
 static bool ppWait3(void) {
-    waitForINT3();
+    for (int i = 0; i < 5000 && waitingForInt3 && waitingForInt5; i++) {
+        delayMicroseconds(100);
+    }
+    if (waitingForInt3 && waitingForInt5) {
+        waitingForInt5 = false;
+        return false;
+    }
     return waitingForInt5;
 }
 
@@ -577,20 +587,79 @@ static uint8_t ppNextAudio(uint8_t from, int dir) {
     return from;
 }
 
-static uint8_t ppRandomAudio(void) {
-    int candidates[PP_MAX_TRACKS + 1];
-    int count = 0;
+/* True Fisher-Yates shuffle deck: visits every audio track ONCE before
+ * reshuffling, so shuffle NEVER repeats an already-played track in a cycle! */
+static void ppShuffleBuildDeck(uint8_t refTrack, bool pinFirst) {
+    uint8_t count = 0;
 
-    for (int t = s_pp.firstTrack; t <= s_pp.lastTrack; t++) {
+    for (int t = s_pp.firstTrack; t <= s_pp.lastTrack && count < PP_MAX_TRACKS; t++) {
         if (!s_pp.dataTrack[t]) {
-            candidates[count++] = t;
+            s_pp.shuffleDeck[count++] = (uint8_t) t;
         }
     }
+    s_pp.shuffleCount = count;
+    s_pp.shufflePos   = 0;
+    if (count <= 1) return;
 
-    if (count == 0) return 0;
+    s_pp.rng ^= (s_pp.frame * 2654435761u) ^ (s_pp.posFrame * 2246822519u) ^
+                ((uint32_t) s_pp.discAngle * 3266489917u);
+    for (int i = (int) count - 1; i > 0; i--) {
+        s_pp.rng = s_pp.rng * 1103515245u + 12345u;
+        int j = (int) ((s_pp.rng >> 16) % (uint32_t) (i + 1));
+        uint8_t tmp = s_pp.shuffleDeck[i];
+        s_pp.shuffleDeck[i] = s_pp.shuffleDeck[j];
+        s_pp.shuffleDeck[j] = tmp;
+    }
 
-    s_pp.rng = s_pp.rng * 1103515245u + 12345u;
-    return (uint8_t)candidates[(s_pp.rng >> 16) % (uint32_t)count];
+    if (refTrack >= s_pp.firstTrack && refTrack <= s_pp.lastTrack && !s_pp.dataTrack[refTrack]) {
+        if (pinFirst) {
+            /* Keep currently playing track at index 0 so it counts as already played */
+            for (int i = 0; i < (int) count; i++) {
+                if (s_pp.shuffleDeck[i] == refTrack) {
+                    uint8_t tmp = s_pp.shuffleDeck[0];
+                    s_pp.shuffleDeck[0] = s_pp.shuffleDeck[i];
+                    s_pp.shuffleDeck[i] = tmp;
+                    break;
+                }
+            }
+        } else if (s_pp.shuffleDeck[0] == refTrack) {
+            /* On cycle wrap, avoid repeating the last track back-to-back */
+            uint8_t tmp = s_pp.shuffleDeck[0];
+            s_pp.shuffleDeck[0] = s_pp.shuffleDeck[count - 1];
+            s_pp.shuffleDeck[count - 1] = tmp;
+        }
+    }
+}
+
+static void ppShuffleSyncTrack(uint8_t track) {
+    if (!s_pp.shuffle) return;
+    if (s_pp.shuffleCount == 0) {
+        ppShuffleBuildDeck(track, true);
+        return;
+    }
+    int found = -1;
+    for (int i = 0; i < (int) s_pp.shuffleCount; i++) {
+        if (s_pp.shuffleDeck[i] == track) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0) {
+        ppShuffleBuildDeck(track, true);
+        return;
+    }
+    if (found > (int) s_pp.shufflePos) {
+        /* Advance cursor by 1 and swap chosen track into the new slot */
+        if ((int) s_pp.shufflePos + 1 < (int) s_pp.shuffleCount) {
+            s_pp.shufflePos++;
+        }
+        uint8_t tmp = s_pp.shuffleDeck[s_pp.shufflePos];
+        s_pp.shuffleDeck[s_pp.shufflePos] = s_pp.shuffleDeck[found];
+        s_pp.shuffleDeck[found] = tmp;
+    } else {
+        /* User manually picked a previously-played track: rebuild deck starting here */
+        ppShuffleBuildDeck(track, true);
+    }
 }
 
 static void ppPlayTrack(uint8_t track) {
@@ -605,24 +674,33 @@ static void ppPlayTrack(uint8_t track) {
         return;
     }
 
-    uint32_t abs = s_pp.startFrame[track];
+    uint32_t abs = s_ppSdMounted ? 150u : s_pp.startFrame[track];
 
-    /* Cleanly pause any active CD-DA stream before issuing SETLOC+PLAY so
-     * rapid track switching never collides with the PS1 HC05 Mechacon. */
+    /* Cleanly pause any active CD-DA stream before switching track so
+     * rapid track skipping never collides with an in-flight HC05 command. */
+    cdromBusy = false;
     if (s_pp.playing && !s_pp.paused) {
         if (ppCommand(CDROM_CMD_PAUSE, NULL, 0)) {
-            ppWaitInt2(250);
+            ppWaitInt2(600);
         }
     }
 
+    /* Tell RP2040 which SD track index (0..98) to stream at 00:02:00 (zero sled seek!). */
+    if (s_ppSdMounted) {
+        picoSendCommand(PICO_CMD_PICOPLAYER,
+                        (uint16_t) (PICO_PP_SELECT_TRACK_MASK | (uint16_t) (track - 1)));
+        delayMicroseconds(15000);
+    }
+
     if (!ppSetLocAndPlay(abs)) {
-        /* One recovery attempt after a clean PAUSE in case a prior seek raced */
+        /* One clean recovery attempt after PAUSE */
         if (ppCommand(CDROM_CMD_PAUSE, NULL, 0)) {
-            ppWaitInt2(250);
+            ppWaitInt2(400);
         }
-        delayMicroseconds(10000);
+        delayMicroseconds(15000);
         if (!ppSetLocAndPlay(abs)) {
             s_pp.playing = false;
+            cdromBusy = false;
             ppToast("ERRO DE CD");
             return;
         }
@@ -727,7 +805,20 @@ static void ppAdvance(void) {
     uint8_t next;
 
     if (s_pp.shuffle) {
-        next = ppRandomAudio();
+        if (s_pp.shuffleCount == 0) {
+            ppShuffleBuildDeck(s_pp.curTrack, true);
+        }
+        if ((int) s_pp.shufflePos + 1 < (int) s_pp.shuffleCount) {
+            s_pp.shufflePos++;
+            next = s_pp.shuffleDeck[s_pp.shufflePos];
+        } else {
+            if (s_pp.repeatMode != PP_REPEAT_ALL) {
+                ppStop();
+                return;
+            }
+            ppShuffleBuildDeck(s_pp.curTrack, false);
+            next = (s_pp.shuffleCount > 0) ? s_pp.shuffleDeck[0] : 0;
+        }
     } else if (s_pp.program && s_pp.programCount > 0) {
         int index = -1;
         for (int i = 0; i < s_pp.programCount; i++) {
@@ -772,7 +863,44 @@ static void ppManualNext(int dir) {
     }
 
     uint8_t from = ppAudioReady() ? s_pp.curTrack : s_pp.selTrack;
-    uint8_t next = ppNextAudio(from, dir);
+    uint8_t next = 0;
+
+    if (s_pp.shuffle) {
+        if (s_pp.shuffleCount == 0) {
+            ppShuffleBuildDeck(from, true);
+        }
+        if (dir < 0) {
+            if (s_pp.shufflePos > 0) {
+                s_pp.shufflePos--;
+            }
+            next = (s_pp.shuffleCount > 0) ? s_pp.shuffleDeck[s_pp.shufflePos] : 0;
+        } else {
+            if ((int) s_pp.shufflePos + 1 < (int) s_pp.shuffleCount) {
+                s_pp.shufflePos++;
+                next = s_pp.shuffleDeck[s_pp.shufflePos];
+            } else {
+                /* All tracks in this shuffle cycle played — build fresh non-repeating cycle */
+                ppShuffleBuildDeck(from, false);
+                next = (s_pp.shuffleCount > 0) ? s_pp.shuffleDeck[0] : 0;
+            }
+        }
+    } else if (s_pp.program && s_pp.programCount > 0) {
+        int index = -1;
+        for (int i = 0; i < (int) s_pp.programCount; i++) {
+            if (s_pp.programOrder[i] == from) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) {
+            index = (dir >= 0) ? 0 : (int) s_pp.programCount - 1;
+        } else {
+            index = (index + ((dir >= 0) ? 1 : -1) + (int) s_pp.programCount) % (int) s_pp.programCount;
+        }
+        next = s_pp.programOrder[index];
+    } else {
+        next = ppNextAudio(from, dir);
+    }
 
     if (next != 0) ppPlayTrack(next);
 }
@@ -2526,7 +2654,11 @@ static void ppActivateTransport(int idx) {
                 ppResume();
             } else {
                 uint8_t t = ppAudioReady() ? s_pp.curTrack : s_pp.selTrack;
-                if (s_pp.dataTrack[t]) t = ppNextAudio(t, 1);
+                if (s_pp.program && s_pp.programCount > 0 && !s_pp.programmed[t]) {
+                    t = s_pp.programOrder[0];
+                } else if (s_pp.dataTrack[t]) {
+                    t = ppNextAudio(t, 1);
+                }
                 ppPlayTrack(t);
             }
             break;
@@ -2557,7 +2689,11 @@ static void ppActivateMenu(void) {
 
         case PP_MENU_SHUFFLE:
             s_pp.shuffle = !s_pp.shuffle;
-            if (s_pp.shuffle) s_pp.program = false;
+            if (s_pp.shuffle) {
+                s_pp.program = false;
+                ppShuffleBuildDeck(ppAudioReady() ? s_pp.curTrack : s_pp.selTrack,
+                                   s_pp.playing || s_pp.paused);
+            }
             ppToast(s_pp.shuffle ? "ALEAT\xD3RIO ON" : "ALEAT\xD3RIO OFF");
             break;
 
@@ -2840,6 +2976,7 @@ static void ppHandlePlayerInput(uint16_t pressed, uint16_t buttons) {
                 if (s_pp.program) {
                     ppToggleProgramTrack(track);
                 } else {
+                    ppShuffleSyncTrack(track);
                     ppPlayTrack(track);
                 }
             }
@@ -2964,7 +3101,6 @@ typedef struct __attribute__((packed)) {
     uint32_t lengthSectors;
 } PpWireTrack;
 
-static bool s_ppSdMounted = false;
 static uint8_t s_ppMetaSecBuf[2352] __attribute__((aligned(4)));
 static uint32_t s_sdTrackLen[PP_MAX_TRACKS];
 
@@ -3167,11 +3303,13 @@ void picoplayer_enter(void) {
      * scanning SD:/PicoPlayer/, preloading album art and reading the virtual TOC! */
     uint16_t sdCount = ppLoadSdCatalog();
 
-    for (int attempt = 0; attempt < 8 && !s_pp.tocValid; attempt++) {
-        if (ppReadToc()) {
-            s_pp.tocValid = true;
-        } else {
-            delayMicroseconds(50000);
+    if (sdCount == 0) {
+        for (int attempt = 0; attempt < 8 && !s_pp.tocValid; attempt++) {
+            if (ppReadToc()) {
+                s_pp.tocValid = true;
+            } else {
+                delayMicroseconds(50000);
+            }
         }
     }
 
@@ -3186,21 +3324,22 @@ void picoplayer_enter(void) {
 
     ppSetVideoMode(true, false);
 
-    /* If SD:/PicoPlayer/ tracks were loaded via PPA1, synthesize exact TOC
-     * timings as fallback so we never discard the user's SD catalogue. */
-    if (sdCount > 0 && (!s_pp.tocValid || s_pp.lastTrack < sdCount)) {
-        uint32_t cur = 150u;
+    /* For SD:/PicoPlayer/, every track streams from 00:02:00 (frame 150) via
+     * PICO_PP_SELECT_TRACK_MASK on a single 73:00 virtual Red Book track —
+     * unlimited total playlist length, zero >79:59 HC05 errors, instant seek! */
+    if (sdCount > 0) {
+        uint32_t total = 150u;
         s_pp.firstTrack = 1;
         s_pp.lastTrack  = (uint8_t) sdCount;
         for (uint16_t i = 0; i < sdCount; i++) {
             uint8_t t = (uint8_t)(i + 1);
             uint32_t len = s_sdTrackLen[i] ? s_sdTrackLen[i] : (75u * 180u);
-            s_pp.startFrame[t]  = cur;
+            s_pp.startFrame[t]  = 150u;
             s_pp.lengthFrame[t] = len;
             s_pp.dataTrack[t]   = false;
-            cur += len;
+            total += len;
         }
-        s_pp.discEndFrame = cur;
+        s_pp.discEndFrame = total;
         s_pp.tocValid = true;
     }
 
@@ -3275,14 +3414,26 @@ void picoplayer_begin_exit(void) {
 void picoplayer_finish_exit(void) {
     if (!s_pp.active) return;
 
+    cdromBusy = false;
+    initCDROM();
     if (s_ppSdMounted) {
+        uint8_t session = 1;
         picoSendCommand(PICO_CMD_PICOPLAYER, PICO_PP_EXIT);
-        delayMicroseconds(25000);
+        delayMicroseconds(80000);
         if (ppCommand(CDROM_CMD_INIT, NULL, 0)) {
-            ppWaitInt2(1500);
+            ppWaitInt2(1000);
         }
+        /* Re-read Lead-In TOC (bounded!) so the PS1 HC05 switches cleanly from
+         * the virtual Audio CD TOC back to the 1-track Data Menu CD TOC before
+         * PicoMenu issues Mode-2 READ_N for the directory listing! */
+        if (ppCommand(CDROM_CMD_SETSESSION, &session, sizeof(session))) {
+            ppWaitInt2(2000);
+        }
+        ppCommand(CDROM_CMD_NOP, NULL, 0);
+        delayMicroseconds(50000);
         s_ppSdMounted = false;
     }
+    cdromBusy = false;
     s_pp.active = false;
 }
 
@@ -3329,9 +3480,18 @@ bool picoplayer_update_and_draw(DMAChain *chain, const TextureInfo *font,
 
     uint16_t pressed = (uint16_t)(~prevButtons & buttons);
 
+    /* Handle user input BEFORE ppTick() so manual track skipping never races
+     * with a periodic GETLOC_P poll in the same frame. */
+    if (s_pp.scope) {
+        ppHandleScopeInput(pressed, buttons);
+    } else {
+        ppHandlePlayerInput(pressed, buttons);
+    }
+
     ppTick();
     if (s_pp.scope) {
         ppReadCapture();
+        ppComputeSpectrum();
     }
 
     if (s_pp.toastTimer > 0) s_pp.toastTimer--;
@@ -3340,13 +3500,6 @@ bool picoplayer_update_and_draw(DMAChain *chain, const TextureInfo *font,
 
     if (s_pp.playing && !s_pp.paused) {
         s_pp.discAngle = (s_pp.discAngle + 6) % 360;
-    }
-
-    if (s_pp.scope) {
-        ppHandleScopeInput(pressed, buttons);
-        if (s_pp.scope) ppComputeSpectrum();
-    } else {
-        ppHandlePlayerInput(pressed, buttons);
     }
 
     if (s_pp.scope) {

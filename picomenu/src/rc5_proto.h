@@ -24,10 +24,11 @@ typedef enum {
 } PicoCommand;
 
 typedef enum {
-    PICO_PP_SCAN_SD      = 0,
-    PICO_PP_MOUNT_SD     = 1,
-    PICO_PP_EXIT         = 2,
-    PICO_PP_GET_ART_MASK = 0x0100
+    PICO_PP_SCAN_SD           = 0,
+    PICO_PP_MOUNT_SD          = 1,
+    PICO_PP_EXIT              = 2,
+    PICO_PP_GET_ART_MASK      = 0x0100,
+    PICO_PP_SELECT_TRACK_MASK = 0x0200
 } PicoPlayerSubCmd;
 
 // Extended subcommand arguments: arg = (ext << 1) | value
@@ -36,7 +37,8 @@ typedef enum {
     PICO_EXT_SKIP_EDC        = 2, // arg 4 (off) / 5 (on -> skip EDC)
     PICO_EXT_GET_CFG         = 3, // arg 6
     PICO_EXT_GET_BG          = 4, // arg 8
-    PICO_EXT_OVERCLOCK       = 5  // arg 10 (off) / 11 (on)
+    PICO_EXT_OVERCLOCK       = 5, // arg 10 (off) / 11 (on)
+    PICO_EXT_HARD_RESET      = 6  // arg 13 -> RP2040 pulses PS1 Pin::RESET for clean Full Boot
 } PicoExtendedCmd;
 
 // Exact RC5 virtual LBAs (drive sector = 4650 + LBA)
@@ -49,9 +51,10 @@ typedef enum {
 #define PICO_LBA_PP_ART_BASE  360 // sectors 5010..5017 ("PART"/"DEAD" 128x128 8bpp .cov)
 
 static inline void picoSendCommand(uint8_t command, uint16_t argument) {
-    while (cdromBusy) {
+    for (int w = 0; w < 5000 && cdromBusy; w++) {
         delayMicroseconds(100);
     }
+    cdromBusy = false;
     uint8_t test[4] = {
         0x50, // CDROM_TEST_DSP_CMD (0x50 = pass 3 bytes directly to CXD/PicoStation DSP)
         (uint8_t)(0xF0u | (command & 0x0Fu)),

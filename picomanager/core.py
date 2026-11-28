@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PicoManager Core — Open-source SD Card Manager & Audio Encoder for PicoStation 2.0.
+PicoManager Core — Open-source SD Card Manager & Audio Encoder for PicoStation 2.1.
 
 Features:
 - PS1 ISO9660 GameID extraction from .cue/.bin (SYSTEM.CNF -> SLUS-00748)
@@ -46,10 +46,11 @@ def get_app_dir() -> Path:
 
 
 def _subprocess_kwargs() -> Dict[str, object]:
-    """Prevents console window flashes when spawning ffmpeg/ffprobe on Windows."""
+    """Always decode ffmpeg/ffprobe output as UTF-8 and hide Windows console flashes."""
+    kw: Dict[str, object] = {"encoding": "utf-8", "errors": "replace"}
     if sys.platform.startswith("win"):
-        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
-    return {}
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return kw
 
 
 def _find_media_tool(tool_name: str) -> Optional[str]:
@@ -627,9 +628,31 @@ def save_config_ini(sd_root: Path, cfg: MenuConfigData) -> Path:
 # PicoPlayer Audio Encoder (MP3/WAV) + Free Online ID3 Auto-Tagger
 # ---------------------------------------------------------------------------
 
+_TYPO_TRANS = str.maketrans({
+    "\u2018": "'",   # ‘
+    "\u2019": "'",   # ’
+    "\u201A": "'",   # ‚
+    "\u201B": "'",   # ‛
+    "\u2032": "'",   # ′
+    "\u201C": '"',   # “
+    "\u201D": '"',   # ”
+    "\u201E": '"',   # „
+    "\u2033": '"',   # ″
+    "\u2010": "-",   # ‐
+    "\u2011": "-",   # ‑
+    "\u2012": "-",   # ‒
+    "\u2013": "-",   # –
+    "\u2014": "-",   # —
+    "\u2015": "-",   # ―
+    "\u2212": "-",   # −
+    "\u2026": "...", # …
+    "\u00A0": " ",   # NBSP
+})
+
+
 def _sanitize_latin1(text: str) -> str:
     """Keeps clean Latin-1 characters supported by PicoPlayer's PU-20 font."""
-    text = text.strip()
+    text = text.translate(_TYPO_TRANS).strip()
     out = []
     for ch in text:
         if 0x20 <= ord(ch) <= 0xFF:
@@ -638,6 +661,16 @@ def _sanitize_latin1(text: str) -> str:
             norm = unicodedata.normalize("NFKD", ch).encode("latin-1", "ignore").decode("latin-1")
             out.append(norm)
     return "".join(out).strip()
+
+
+def _sanitize_audio_stem(stem: str) -> str:
+    """Produces a clean ASCII filename stem using only A-Z, a-z, 0-9 and '_' (accents/punctuation stay in ID3)."""
+    s = stem.translate(_TYPO_TRANS)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.replace("'", "").replace('"', "")
+    s = re.sub(r"[^A-Za-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "track"
 
 
 def probe_audio_tags(src_path: Path) -> Dict[str, str]:
@@ -853,7 +886,7 @@ def convert_audio_for_picoplayer(
     if not tags["title"]:
         tags["title"] = _sanitize_latin1(src_file.stem)
 
-    safe_stem = re.sub(r'[<>:"/\\|?*]+', "_", src_file.stem).strip() or "track"
+    safe_stem = _sanitize_audio_stem(src_file.stem)
     is_wav = (profile == "wav_cd")
     dst_file = out_dir / (f"{safe_stem}.wav" if is_wav else f"{safe_stem}.mp3")
 
@@ -1169,9 +1202,8 @@ def build_picoplayer_index(
         info = _probe_wav_for_index(p) if p.suffix.lower() == ".wav" else _probe_mp3_for_index(p)
         if not info:
             continue
-        if cur_sector + info["length_sectors"] > _PP_MAX_DISC_SECTORS:
-            log(f"  [AVISO] Limite de 99:57 atingido; parando em {len(packed_entries)} faixas.")
-            break
+        if info["length_sectors"] > 328500:
+            info["length_sectors"] = 328500
         has_art = 0
         cov_candidate = pp_dir / f"{p.stem}.cov"
         if not cov_candidate.is_file():

@@ -76,6 +76,7 @@ void initHW();
 void updatePlaybackSpeed();
 void setOverclock(bool enable);
 void cancelSubqAlarm();
+void requestHardReset();
 void reset(uint8_t resetMode = 1);
 }  // namespace picostation
 

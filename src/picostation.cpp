@@ -241,9 +241,12 @@ static void __time_critical_func(send_subq)(const int Sector)
         }
         if (resetMode != 0)
         {
-            while (gpio_get(Pin::RESET) == 0)
+            if (resetMode != 3)
             {
-                tight_loop_contents();
+                while (gpio_get(Pin::RESET) == 0)
+                {
+                    tight_loop_contents();
+                }
             }
 			reset(resetMode);
 		}
@@ -529,9 +532,22 @@ void __time_critical_func(picostation::cancelSubqAlarm)()
     }
 }
 
+void __time_critical_func(picostation::requestHardReset)()
+{
+    const uint32_t irq = save_and_disable_interrupts();
+    s_resetPending = 3;
+    restore_interrupts(irq);
+}
+
 void __time_critical_func(picostation::reset)(const uint8_t resetMode)
 {
     DEBUG_PRINT("RESET!\n");
+    if (resetMode == 3)
+    {
+        // Prevent our own hardware RESET pulse from re-triggering the button IRQ
+        gpio_set_irq_enabled(Pin::RESET, GPIO_IRQ_LEVEL_LOW, false);
+        gpio_set_irq_enabled(Pin::RESET, GPIO_IRQ_LEVEL_HIGH, false);
+    }
     cancelSubqAlarm();
     m_i2s.i2s_set_state(0);
     pio_sm_set_enabled(PIOInstance::SUBQ, SM::SUBQ, false);
@@ -570,8 +586,19 @@ void __time_critical_func(picostation::reset)(const uint8_t resetMode)
         g_discImage.makeDummyCue();
         g_discImage.set_skip_bootsector(false);
         g_discImage.set_skip_edc(false);
+#if defined(PICOSTATION_OVERCLOCK)
+        setOverclock(true);
+#endif
         m_mechCommand.resetBootSectorPattern();
         picostation::DirectoryListing::gotoRoot();
+    }
+    else if (resetMode == 3)
+    {
+        // Wait for any in-flight Core 1 SD read to finish before resetting I2S/drive
+        while (m_i2s.isSdReadInProgress())
+        {
+            tight_loop_contents();
+        }
     }
 
     mechacon_program_init(PIOInstance::MECHACON, SM::MECHACON, s_mechachonOffset, Pin::CMD_DATA);
@@ -582,9 +609,22 @@ void __time_critical_func(picostation::reset)(const uint8_t resetMode)
     gpio_put(Pin::SQSO, 0);
 	g_driveMechanics.resetDrive();
 	m_i2s.reinitI2S();
-    g_discImage.set_skip_bootsector(false);
+    if (resetMode != 3)
+    {
+        g_discImage.set_skip_bootsector(false);
+    }
     m_mechCommand.resetBootSectorPattern();
     ModChip::requestReset();
+
+    if (resetMode == 3)
+    {
+        // Open-drain style pulse on PS1 /RESET (identical to initHW / short physical press):
+        // resets CPU + GPU + SPU + HC05 together while keeping mounted disc & options intact.
+        gpio_put(Pin::RESET, 0);
+        gpio_set_dir(Pin::RESET, GPIO_OUT);
+        sleep_ms(200);
+        gpio_set_dir(Pin::RESET, GPIO_IN);
+    }
 	
 	uint64_t startTime = time_us_64();
 	

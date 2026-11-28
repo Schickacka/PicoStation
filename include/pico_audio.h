@@ -52,6 +52,14 @@ class PicoAudio {
     uint16_t getTrackCount() const { return m_trackCount; }
     uint32_t getTotalSectors() const { return m_totalSectors; }
 
+    // Virtual single-track Red Book disc length (73:00:00 = 328,500 sectors).
+    // Every SD track plays from 00:02:00 via selectTrack(), eliminating >79:59 HC05
+    // SETLOC limits and long physical sled seeks between distant tracks!
+    static constexpr uint32_t kVirtualSingleTrackSectors = 73u * 60u * 75u;
+
+    // Selects active SD track index (0..98) from Core 0 Mechacon command ISR.
+    void selectTrack(uint16_t trackIdx);
+
     // Builds one metadata sector (page 0..6) into m_metaBuf (100% RAM, zero SD I/O!).
     void prepareMetaPage(uint32_t page);
     uint16_t *getMetaBuffer(uint32_t page);
@@ -138,7 +146,10 @@ class PicoAudio {
     volatile bool   m_active = false;
     bool            m_hasMp3 = false;
 
-    // Active playback state (Core 1 only)
+    // Active playback state (Core 1 only; m_selectedTrack/Seq written by Core 0 ISR)
+    volatile uint16_t m_selectedTrack = 0;
+    volatile uint32_t m_trackSelectSeq = 0;
+    uint32_t        m_lastTrackSeq = 0;
     bool            m_fpOpen = false;
     bool            m_artOpen = false;
     int             m_openTrackIdx = -1;

@@ -43,7 +43,7 @@ Ao pressionar **`□` (Quadrado)** na tela raiz do **PicoMenu**, o RP2040 lê a 
 
 ### Botões do painel inferior
 - **`CONTINUAR`:** reprodução sequencial normal
-- **`ALEATÓRIO`:** toca as faixas em ordem aleatória (Shuffle)
+- **`ALEATÓRIO`:** embaralha todas as faixas sem repetir nenhuma já tocada no ciclo (suporta avançar e voltar na ordem embaralhada)
 - **`PROGRAMAR`:** permite montar uma fila personalizada de faixas
 - **`REPETIR`:** alterna entre `OFF`, `REPETIR 1` (faixa atual) e `REPETIR TUDO`
 - **`TEMPO`:** alterna o visor entre tempo decorrido (`TEMPO`), tempo restante da faixa (`REST. FAIXA`) e tempo restante do disco (`REST. DISCO`)

@@ -130,6 +130,7 @@ void uninstallExceptionHandler(void);
  * @param arg Optional argument to be passed to handler
  */
 void setInterruptHandler(ArgFunction func, void *arg);
+void resetInterrupts(void);
 
 /**
  * @brief Temporarily disables interrupts, then calls the BIOS function to clear

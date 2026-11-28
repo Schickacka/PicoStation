@@ -7,6 +7,7 @@ typedef struct {
     const char *loading;
     const char *of;
     const char *emptyFolder;
+    const char *noSdCard;
     const char *open;
     const char *back;
     const char *credits;

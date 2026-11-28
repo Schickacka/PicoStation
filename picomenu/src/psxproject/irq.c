@@ -20,6 +20,10 @@ void handleVSyncIRQ(void){
 }
 
 void handleCDROMIRQ(void) {
+    /* Save active register bank (0..3) so interrupting issueCDROMCommand() can
+     * NEVER leave Bank 1 selected and corrupt CDROM_HINTMSK_W (0x1F801802)! */
+    uint8_t savedBank = CDROM_HSTS & CDROM_HSTS_RA_BITMASK;
+
     CDROM_ADDRESS = 1;
 
     uint8_t irqType = CDROM_HINTSTS & (0
@@ -35,17 +39,20 @@ void handleCDROMIRQ(void) {
     }
 
     CDROM_ADDRESS = 1;
-    CDROM_HCLRCTL = 0 // Acknowledge all IRQs
+    CDROM_HCLRCTL = 0 // Acknowledge all IRQs (NEVER assert CLRPRM inside ISR!)
         | CDROM_HCLRCTL_CLRINT0
         | CDROM_HCLRCTL_CLRINT1
         | CDROM_HCLRCTL_CLRINT2;
-    CDROM_HCLRCTL = CDROM_HCLRCTL_CLRPRM; // Clear parameter buffer
     delayMicroseconds(3);
 
     cdromRespLength = 0;
 
-    while (CDROM_HSTS & CDROM_HSTS_RSLRRDY)
-        cdromResponse[cdromRespLength++] = CDROM_RESULT;
+    while (CDROM_HSTS & CDROM_HSTS_RSLRRDY) {
+        uint8_t b = CDROM_RESULT;
+        if (cdromRespLength < 16) {
+            cdromResponse[cdromRespLength++] = b;
+        }
+    }
 
     switch (irqType) {
         case CDROM_IRQ_DATA_READY:
@@ -64,6 +71,8 @@ void handleCDROMIRQ(void) {
             cdromINT5();
             break;
     }
+
+    CDROM_ADDRESS = savedBank;
 }
 
 

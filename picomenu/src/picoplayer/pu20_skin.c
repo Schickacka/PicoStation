@@ -1334,18 +1334,31 @@ static const Pu20FontRef kFonts[2] = {
     { &s_fontMedium, s_mediumGlyph, s_mediumIndex }
 };
 
-/* Decode UTF-8 Latin-1 (e.g. Á À Â Ã É Ê Í Ó Ô Õ Ú Ü Ç) or raw Latin-1 bytes. */
+/* Decode UTF-8 Latin-1 (e.g. Á À Â Ã É Ê Í Ó Ô Õ Ú Ü Ç), common Unicode
+ * punctuation (curly quotes, dashes, ellipsis), or raw Latin-1 bytes. */
 static uint8_t pu20NextLatin1(const char **text) {
     uint8_t c = (uint8_t) **text;
 
     (*text)++;
     if (c == 0xC2u && (uint8_t) **text >= 0x80u &&
         (uint8_t) **text <= 0xBFu) {
-        return (uint8_t) *((*text)++);
+        uint8_t b1 = (uint8_t) *((*text)++);
+        return (b1 == 0xA0u) ? (uint8_t) ' ' : b1;
     }
     if (c == 0xC3u && (uint8_t) **text >= 0x80u &&
         (uint8_t) **text <= 0xBFu) {
         return (uint8_t) (0x40u + (uint8_t) *((*text)++));
+    }
+    /* UTF-8 General Punctuation U+2000..U+203F (0xE2 0x80 0x80..0xBF) */
+    if (c == 0xE2u && (uint8_t) (*text)[0] == 0x80u &&
+        (uint8_t) (*text)[1] >= 0x80u && (uint8_t) (*text)[1] <= 0xBFu) {
+        uint8_t b2 = (uint8_t) (*text)[1];
+        (*text) += 2;
+        if (b2 >= 0x98u && b2 <= 0x9Bu) return (uint8_t) '\'';
+        if (b2 >= 0x9Cu && b2 <= 0x9Fu) return (uint8_t) '"';
+        if (b2 >= 0x90u && b2 <= 0x95u) return (uint8_t) '-';
+        if (b2 == 0xA6u)                return (uint8_t) '.';
+        return (uint8_t) ' ';
     }
     return c;
 }

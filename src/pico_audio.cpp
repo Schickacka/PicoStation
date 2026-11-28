@@ -79,6 +79,15 @@ static void copyCleanString(char *dst, size_t dstSize, const char *src, size_t s
     for (size_t i = 0; i < srcLen && src[i] != '\0' && out + 1 < dstSize; i++) {
         uint8_t c = static_cast<uint8_t>(src[i]);
         if (c < 0x20u) continue;
+        // Map common UTF-8 typographic punctuation (U+2010..U+2026) to clean ASCII
+        if (c == 0xE2u && i + 2 < srcLen &&
+            static_cast<uint8_t>(src[i + 1]) == 0x80u) {
+            uint8_t b2 = static_cast<uint8_t>(src[i + 2]);
+            if (b2 >= 0x98u && b2 <= 0x9Bu)      { dst[out++] = '\''; i += 2; continue; }
+            else if (b2 >= 0x9Cu && b2 <= 0x9Fu) { dst[out++] = '"';  i += 2; continue; }
+            else if (b2 >= 0x90u && b2 <= 0x95u) { dst[out++] = '-';  i += 2; continue; }
+            else if (b2 == 0xA6u)                { dst[out++] = '.';  i += 2; continue; }
+        }
         dst[out++] = static_cast<char>(c);
     }
     while (out > 0 && dst[out - 1] == ' ') out--;
@@ -134,7 +143,17 @@ static void parseId3v2TextFrame(const uint8_t *payload, uint32_t len, char *dst,
                              : static_cast<uint16_t>((payload[pos] << 8) | payload[pos + 1]);
             pos += 2;
             if (ch == 0) break;
-            if (ch >= 0x20u && ch <= 0xFFu) {
+            if (ch == 0x00A0u) {
+                dst[out++] = ' ';
+            } else if (ch >= 0x2018u && ch <= 0x201Bu) {
+                dst[out++] = '\'';
+            } else if (ch >= 0x201Cu && ch <= 0x201Fu) {
+                dst[out++] = '"';
+            } else if ((ch >= 0x2010u && ch <= 0x2015u) || ch == 0x2212u) {
+                dst[out++] = '-';
+            } else if (ch == 0x2026u) {
+                dst[out++] = '.';
+            } else if (ch >= 0x20u && ch <= 0xFFu) {
                 dst[out++] = static_cast<char>(ch);
             }
         }
@@ -521,8 +540,8 @@ bool PicoAudio::tryLoadIndex() {
     f_close(&m_arena->fp);
     if (!ok) return false;
 
-    // 3) Defensive sanitization & Red Book TOC sector bounds
-    constexpr uint32_t kMaxVirtualDiscSectors = 449800u;
+    // 3) Defensive sanitization (each SD track plays from 00:02:00 via selectTrack(),
+    // so total playlist duration is unlimited — up to 99 tracks, 73 min per track!)
     uint32_t curSector = 0;
     uint16_t fitted = 0;
     m_hasMp3 = false;
@@ -539,14 +558,11 @@ bool PicoAudio::tryLoadIndex() {
             (tr.channels != 1u && tr.channels != 2u) ||
             tr.sampleRateHz < 8000u || tr.sampleRateHz > 48000u ||
             (tr.format == PICO_AUDIO_FMT_WAV && tr.sampleRateHz != 44100u) ||
-            tr.lengthSectors < 75u || tr.lengthSectors > 330000u ||
+            tr.lengthSectors < 75u || tr.lengthSectors > kVirtualSingleTrackSectors ||
             tr.dataBytes < 128u) {
             return false;
         }
-        if (curSector + tr.lengthSectors > kMaxVirtualDiscSectors) {
-            break;
-        }
-        tr.startSector = curSector;
+        tr.startSector = 0;
         curSector += tr.lengthSectors;
         if (tr.format == PICO_AUDIO_FMT_MP3) m_hasMp3 = true;
         fitted++;
@@ -636,19 +652,14 @@ uint16_t PicoAudio::scanFolder() {
         m_arena->tracks[j + 1] = m_arena->sortKey;
     }
 
-    // Enforce Red Book 2-digit BCD MSF limit (99:59:74 = 449,999 sectors incl. 150 pregap)
-    constexpr uint32_t kMaxVirtualDiscSectors = 449800u;
     uint32_t curSector = 0;
-    uint16_t fittedTracks = 0;
     for (uint16_t i = 0; i < m_trackCount; i++) {
-        if (curSector + m_arena->tracks[i].lengthSectors > kMaxVirtualDiscSectors) {
-            break;
+        if (m_arena->tracks[i].lengthSectors > kVirtualSingleTrackSectors) {
+            m_arena->tracks[i].lengthSectors = kVirtualSingleTrackSectors;
         }
-        m_arena->tracks[i].startSector = curSector;
+        m_arena->tracks[i].startSector = 0;
         curSector += m_arena->tracks[i].lengthSectors;
-        fittedTracks++;
     }
-    m_trackCount = fittedTracks;
     m_totalSectors = curSector;
     prepareMetaPage(0);
     return m_trackCount;
@@ -660,8 +671,17 @@ void PicoAudio::setScratchArena(void *base, size_t capacity) {
     s_arenaUsed = 0;
 }
 
+void PicoAudio::selectTrack(uint16_t trackIdx) {
+    m_selectedTrack = trackIdx;
+    m_trackSelectSeq = m_trackSelectSeq + 1u;
+    __dmb();
+}
+
 bool PicoAudio::activate() {
     closeTrackFile();
+    m_selectedTrack = 0;
+    m_trackSelectSeq = 0;
+    m_lastTrackSeq = 0;
     if (m_trackCount == 0 || !m_arena || !ensureArena(false)) {
         m_active = false;
         return false;
@@ -898,7 +918,6 @@ SubQ::Data PicoAudio::generateSubQ(const int sector) {
     // Snapshot arena pointer after memory barrier (Core 0 alarm vs Core 1 deactivate)
     const ArenaState *arena = m_arena;
     const uint16_t trackCount = m_trackCount;
-    const uint32_t totalSectors = m_totalSectors;
     __dmb();
 
     if (!m_active || !arena || trackCount == 0) {
@@ -909,10 +928,12 @@ SubQ::Data PicoAudio::generateSubQ(const int sector) {
     }
 
     if (sector < 0) {
-        // Lead-in: rawSec = 0..4499 (increasing). TOC track 1 starts at 00:02:00 (c_preGap=150).
+        // Lead-in: present a rock-solid 1-track 73:00:00 Red Book Audio CD TOC
+        // (4 entries: A0, A1, A2, T01 @ 00:02:00). Every SD track plays from
+        // 00:02:00 via selectTrack(), eliminating >79:59 HC05 SETLOC rejections
+        // and long sled seeks between tracks!
         const int rawSec = (sector + c_leadIn >= 0) ? (sector + c_leadIn) : 0;
-        const uint32_t totalEntries = 3u + static_cast<uint32_t>(trackCount);
-        const uint32_t entryIdx = (static_cast<uint32_t>(rawSec) / 3u) % totalEntries;
+        const uint32_t entryIdx = (static_cast<uint32_t>(rawSec) / 3u) % 4u;
         subq.ctrladdr = 0x01;
         subq.tno = 0x00;
 
@@ -923,16 +944,15 @@ SubQ::Data PicoAudio::generateSubQ(const int sector) {
             subq.pframe = 0x00;
         } else if (entryIdx == 1) {
             subq.point = 0xA1;
-            subq.pmin = toBcdByte(trackCount);
+            subq.pmin = 0x01;
             subq.psec = 0x00;
             subq.pframe = 0x00;
         } else if (entryIdx == 2) {
             subq.point = 0xA2;
-            sectorToBcdMsf(static_cast<int>(totalSectors) + c_preGap, subq.pmin, subq.psec, subq.pframe);
+            sectorToBcdMsf(static_cast<int>(kVirtualSingleTrackSectors) + c_preGap, subq.pmin, subq.psec, subq.pframe);
         } else {
-            const uint32_t t = entryIdx - 3u;
-            subq.point = toBcdByte(static_cast<int>(t + 1));
-            sectorToBcdMsf(static_cast<int>(arena->tracks[t].startSector) + c_preGap, subq.pmin, subq.psec, subq.pframe);
+            subq.point = 0x01;
+            sectorToBcdMsf(c_preGap, subq.pmin, subq.psec, subq.pframe);
         }
         sectorToBcdMsf(rawSec, subq.min, subq.sec, subq.frame);
         subq.zero = 0x00;
@@ -952,31 +972,21 @@ SubQ::Data PicoAudio::generateSubQ(const int sector) {
 
     // Program area starts at sector == c_preGap (00:02:00 = LBA 0)
     const uint32_t progSec = static_cast<uint32_t>(sector - c_preGap);
-    if (progSec >= totalSectors) {
+    if (progSec >= kVirtualSingleTrackSectors) {
         // Lead-out area (tno 0xAA), matching DiscImage::generateSubQ()
         subq.ctrladdr = 0x01;
         subq.tno = 0xAA;
         subq.point = 0x01;
-        sectorToBcdMsf(static_cast<int>(progSec - totalSectors), subq.min, subq.sec, subq.frame);
+        sectorToBcdMsf(static_cast<int>(progSec - kVirtualSingleTrackSectors), subq.min, subq.sec, subq.frame);
         subq.zero = 0x00;
         sectorToBcdMsf(sector, subq.pmin, subq.psec, subq.pframe);
         return subq;
     }
 
-    uint16_t tIdx = 0;
-    for (uint16_t i = 0; i < trackCount; i++) {
-        if (progSec >= arena->tracks[i].startSector) {
-            tIdx = i;
-        } else {
-            break;
-        }
-    }
-
     subq.ctrladdr = 0x01;
-    subq.tno = toBcdByte(static_cast<int>(tIdx + 1));
+    subq.tno = 0x01;
     subq.point = 0x01;
-    const int rel = static_cast<int>(progSec - arena->tracks[tIdx].startSector);
-    sectorToBcdMsf(rel, subq.min, subq.sec, subq.frame);
+    sectorToBcdMsf(static_cast<int>(progSec), subq.min, subq.sec, subq.frame);
     subq.zero = 0x00;
     // sector is ALREADY absolute MSF (00:02:00 at LBA 0) — never add +150 twice!
     sectorToBcdMsf(sector, subq.pmin, subq.psec, subq.pframe);
@@ -1197,27 +1207,28 @@ void PicoAudio::readSector(uint32_t *i2sBuffer, const int sector) {
     }
 
     const uint32_t progSec = static_cast<uint32_t>(sector - c_preGap);
-    if (progSec >= m_totalSectors) {
+    const uint16_t tIdx = m_selectedTrack;
+    const uint32_t selSeq = m_trackSelectSeq;
+    __dmb();
+
+    if (tIdx >= m_trackCount) {
         memset(i2sBuffer, 0, c_cdSamplesBytes * 2);
         return;
     }
 
-    uint16_t tIdx = 0;
-    for (uint16_t i = 0; i < m_trackCount; i++) {
-        if (progSec >= m_arena->tracks[i].startSector) {
-            tIdx = i;
-        } else {
-            break;
-        }
+    const TrackEntry &tr = m_arena->tracks[tIdx];
+    const uint32_t relSector = progSec;
+    if (relSector >= tr.lengthSectors) {
+        memset(i2sBuffer, 0, c_cdSamplesBytes * 2);
+        return;
     }
 
-    const TrackEntry &tr = m_arena->tracks[tIdx];
-    const uint32_t relSector = progSec - tr.startSector;
-
+    const bool trackReSelected = (m_lastTrackSeq != selSeq);
     const bool needSeek = (tr.format == PICO_AUDIO_FMT_MP3) &&
                           (relSector < m_expectedRelSector || relSector > m_expectedRelSector + 4u);
 
-    if (!m_fpOpen || m_openTrackIdx != static_cast<int>(tIdx) || needSeek) {
+    if (!m_fpOpen || m_openTrackIdx != static_cast<int>(tIdx) || trackReSelected || needSeek) {
+        m_lastTrackSeq = selSeq;
         if (!openTrackFile(tIdx, relSector)) {
             memset(i2sBuffer, 0, c_cdSamplesBytes * 2);
             return;

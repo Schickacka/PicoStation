@@ -167,6 +167,7 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 			g_discImage.set_skip_edc(false);
 			mechCommand.resetBootSectorPattern();
 			modChip.reset();
+			picostation::DirectoryListing::gotoRoot();
 			continue;
 		}
 		
@@ -419,7 +420,7 @@ int __time_critical_func(picostation::I2S::initDMA)(const volatile void *read_ad
 
 					if (g_picoAudio.activate())
 					{
-						c_sectorMax = static_cast<int>(g_picoAudio.getTotalSectors()) + c_leadIn + c_preGap + 150;
+						c_sectorMax = static_cast<int>(picostation::PicoAudio::kVirtualSingleTrackSectors) + c_leadIn + c_preGap + 150;
 						g_targetPlaybackSpeed = 1;
 						g_audioCtrlMode = audioControlModes::NORMAL;
 						g_audioMuted = false;

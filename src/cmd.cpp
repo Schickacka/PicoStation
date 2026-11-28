@@ -10,6 +10,7 @@
 #include "logging.h"
 #include "main.pio.h"
 #include "pico/bootrom.h"
+#include "pico_audio.h"
 #include "picostation.h"
 #include "pseudo_atomics.h"
 #include "values.h"
@@ -369,6 +370,13 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 							picostation::setOverclock((command.custom_cmd.arg & 1) != 0);
 #endif
 							break;
+
+						case EXTENDED_HARD_RESET:
+							if ((command.custom_cmd.arg & 1) != 0)
+							{
+								picostation::requestHardReset();
+							}
+							break;
 						
 						default:
 							break;
@@ -405,6 +413,10 @@ void __time_critical_func(picostation::MechCommand::processLatchedCommand)()
 					else if ((command.custom_cmd.arg & PP_SUBCMD_GET_ART_MASK) != 0)
 					{
 						dispatchFileAction(FileListingStates::PP_GET_ART, true);
+					}
+					else if ((command.custom_cmd.arg & PP_SUBCMD_SELECT_TRACK_MASK) != 0)
+					{
+						g_picoAudio.selectTrack(static_cast<uint16_t>(command.custom_cmd.arg & 0x00FFu));
 					}
 					break;
 				}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PicoManager 2.0 — Open-source SD Card Manager & PicoPlayer Audio Encoder.
+PicoManager 2.1 — Open-source SD Card Manager & PicoPlayer Audio Encoder.
 PU-20 inspired desktop GUI (PT-BR / EN) for Linux and Windows.
 """
 

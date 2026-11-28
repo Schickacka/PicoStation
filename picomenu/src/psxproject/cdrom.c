@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include "delay.h"
+#include "system.h"
 #include "../logging.h"
 
 #if DEBUG_CDROM
@@ -71,60 +72,75 @@ void initCDROM(void) {
 }
 
 void issueCDROMCommand(uint8_t cmd, const uint8_t *arg, size_t argLength) {
+    /* Wait briefly for HC05 busy flag to clear (bounded — never hang forever) */
+    for (int w = 0; w < 2000 && CDROM_BUSY; w++) {
+        delayMicroseconds(100);
+    }
+
+    /* Atomic critical section around bank switching, parameter FIFO writes and
+     * command dispatch so an incoming CDROM IRQ can NEVER change CDROM_ADDRESS
+     * or race with waitingForInt flags! */
+    bool irqWasEnabled = disableInterrupts();
+
     waitingForInt1 = true;
     waitingForInt2 = true;
     waitingForInt3 = true;
     waitingForInt4 = true;
     waitingForInt5 = true;
-	cdromStatus = 0;
+    cdromStatus = 0;
     cdromDataReady = false;
 
-    while (CDROM_BUSY)
-        __asm__ volatile("");
-    
+    /* Ensure CD-ROM IRQ mask is always armed and drain any stale IRQ/result */
     CDROM_ADDRESS = 1;
+    CDROM_HINTMSK_W = CDROM_HCLRCTL_CLRINT0 | CDROM_HCLRCTL_CLRINT1 | CDROM_HCLRCTL_CLRINT2;
+    if (CDROM_HINTSTS & 0x07u) {
+        CDROM_HCLRCTL = CDROM_HCLRCTL_CLRINT0 | CDROM_HCLRCTL_CLRINT1 | CDROM_HCLRCTL_CLRINT2;
+        while (CDROM_HSTS & CDROM_HSTS_RSLRRDY) {
+            (void) CDROM_RESULT;
+        }
+    }
     CDROM_HCLRCTL = CDROM_HCLRCTL_CLRPRM; // Clear parameter buffer
-    delayMicroseconds(100);
-    int time = 102;
-    __asm__ volatile(
-        // The .set noreorder directive will prevent the assembler from trying
-        // to "hide" the branch instruction's delay slot by shuffling nearby
-        // instructions. .set push and .set pop are used to save and restore the
-        // assembler's settings respectively, ensuring the noreorder flag will
-        // not affect any other code.
-        ".set push\n"
-        ".set noreorder\n"
-        "bgtz  %0, .\n"
-        "addiu %0, -2\n"
-        ".set pop\n"
-        : "+r"(time)
-    );
+    delayMicroseconds(20);
 
-    while (CDROM_BUSY)
-        __asm__ volatile("");
+    for (int w = 0; w < 500 && CDROM_BUSY; w++) {
+        delayMicroseconds(50);
+    }
 
     CDROM_ADDRESS = 0;
     for (; argLength > 0; argLength--)
         CDROM_PARAMETER = *(arg++);
-    
+
     CDROM_COMMAND = cmd;
+
+    if (irqWasEnabled) {
+        enableInterrupts();
+    }
 }
 
 void waitForINT1(){
-    while(waitingForInt1 && waitingForInt5){
-        __asm__ volatile("");
+    for (int t = 0; t < 25000 && waitingForInt1 && waitingForInt5; t++) {
+        delayMicroseconds(100);
+    }
+    if (waitingForInt1 && waitingForInt5) {
+        waitingForInt5 = false;
     }
 }
 
 void waitForINT2(){
-    while(waitingForInt2 && waitingForInt5){
-        __asm__ volatile("");
+    for (int t = 0; t < 25000 && waitingForInt2 && waitingForInt5; t++) {
+        delayMicroseconds(100);
+    }
+    if (waitingForInt2 && waitingForInt5) {
+        waitingForInt5 = false;
     }
 }
 
 void waitForINT3(){
-    while(waitingForInt3 && waitingForInt5){
-        __asm__ volatile("");
+    for (int t = 0; t < 15000 && waitingForInt3 && waitingForInt5; t++) {
+        delayMicroseconds(100);
+    }
+    if (waitingForInt3 && waitingForInt5) {
+        waitingForInt5 = false;
     }
 }
 
@@ -145,7 +161,7 @@ void waitForINT5(){
 
 void startCDROMRead(uint32_t lba, void *ptr, size_t numSectors, size_t sectorSize, bool doubleSpeed, bool wait)
 {
-    while (cdromBusy)
+    for (int w = 0; w < 5000 && cdromBusy; w++)
     {
         delayMicroseconds(100);
     }
@@ -188,10 +204,19 @@ void startCDROMRead(uint32_t lba, void *ptr, size_t numSectors, size_t sectorSiz
 
     if (wait)
     {
-        while (cdromBusy && waitingForInt5)
+        int timeout = 0;
+        while (cdromBusy && waitingForInt5 && timeout < 25000)
         {
             // Wait until INT1 DMA + PAUSE INT2 (or INT5 error) complete cleanly
             delayMicroseconds(100);
+            timeout++;
+        }
+        if (timeout >= 25000 && cdromBusy)
+        {
+            waitingForInt5 = false;
+            s_waitingPauseInt2 = false;
+            cdromBusy = false;
+            return;
         }
         if (!waitingForInt5)
         {

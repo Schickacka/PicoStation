@@ -475,6 +475,21 @@ void rc5BootStepAndDraw(DMAChain *chain, const TextureInfo *font) {
         }
 
         case 102: {
+            // Stop the drive cleanly, then ask RP2040 to pulse physical Pin::RESET so
+            // CPU + GPU + SPU + HC05 reboot in sync (eliminates the Sony->PlayStation
+            // logo delay on Full Boot while preserving mounted disc, options & MemCard GameID).
+            issueCDROMCommand(CDROM_CMD_STOP, NULL, 0);
+            waitForINT3();
+            picoSendCommand(PICO_CMD_EXTENDED, (uint16_t)((PICO_EXT_HARD_RESET << 1) | 1));
+            // Give RP2040 up to 500 ms to assert Pin::RESET; if RESET wire is absent,
+            // fall back cleanly to a software BIOS reset.
+            for (int i = 0; i < 500; i++) {
+                delayMicroseconds(1000);
+            }
+            CDROM_ADDRESS = 1;
+            CDROM_HINTMSK_W = 0;
+            CDROM_HCLRCTL = 0x1F;
+            resetInterrupts();
             softReset();
             break;
         }
